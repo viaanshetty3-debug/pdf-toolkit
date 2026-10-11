@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PDF to Word · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>PDF to Word</h1>
+    <p class="subtitle">Extract text and structure from any PDF into a fully editable Word document. Preserves headings, lists, tables, and paragraphs for seamless editing.</p>
+    <div id="tool"></div>
+  </main>
+  <script type="module">
+    import { mountSingleFileTool } from '/_single-file.js';
+    mountSingleFileTool({
+      endpoint: '/api/pdf-to-word',
+      outName: 'converted.docx',
+      icon: 'W',
+    });
+  </script>
+</body>
+</html>

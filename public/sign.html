@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign PDF · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.js"></script>
+  <style>
+    .layout { display: grid; grid-template-columns: 180px 1fr; gap: 16px; margin-top: 20px; }
+    .rail { display: flex; flex-direction: column; gap: 8px; max-height: 70vh; overflow-y: auto; }
+    .rail-tile { background: var(--panel-2); border: 2px solid var(--border); border-radius: 8px; padding: 6px; cursor: pointer; }
+    .rail-tile.active { border-color: var(--accent); }
+    .rail-tile canvas { width: 100%; display: block; background: #fff; border-radius: 4px; }
+    .rail-tile .label { text-align: center; font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .canvas-wrap { position: relative; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 16px; overflow: auto; }
+    .canvas-wrap canvas { display: block; background: #fff; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+    .overlay { position: absolute; inset: 16px; cursor: crosshair; }
+    .sig-box { position: absolute; border: 2px dashed var(--accent); cursor: move; }
+    .sig-box img { width: 100%; height: 100%; display: block; }
+    .sig-box .resize { position: absolute; right: -8px; bottom: -8px; width: 14px; height: 14px; background: var(--accent); border-radius: 50%; cursor: nwse-resize; }
+    .sig-box .del { position: absolute; top: -10px; right: -10px; width: 22px; height: 22px; background: var(--danger); color: #fff; border: none; border-radius: 50%; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <header class="topnav"></header>
+  <main style="max-width: 1400px;">
+    <h1>Sign PDF</h1>
+    <p class="subtitle">Drop your PDF, upload a signature image (PNG with transparency recommended), click where you want it.</p>
+
+    <div class="dropzone" id="drop">
+      <input type="file" />
+      <div class="big">✍</div>
+      <div><strong>Drop a PDF</strong> or click to browse</div>
+    </div>
+
+    <div id="loaded" class="hidden">
+      <div class="row" style="margin-top: 16px;">
+        <strong id="loadedname"></strong>
+        <span class="pill" id="loadedpages"></span>
+        <div class="spacer"></div>
+        <label class="btn secondary" style="cursor:pointer;margin:0">
+          <span id="sigLabel">Upload signature</span>
+          <input type="file" id="sigFile" accept="image/png,image/jpeg" style="display:none" />
+        </label>
+        <button class="btn secondary" id="changefile">Change PDF</button>
+      </div>
+
+      <div class="layout">
+        <div class="rail" id="rail"></div>
+        <div>
+          <div class="canvas-wrap" id="canvasWrap">
+            <canvas id="pageCanvas"></canvas>
+            <div class="overlay" id="overlay"></div>
+          </div>
+          <div class="row right" style="margin-top: 20px;">
+            <div class="progress hidden" id="progwrap" style="flex:1"><div class="bar" id="bar"></div></div>
+            <button class="btn" id="go">Apply & Download</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { renderNav, makeDropzone, postForm, downloadBlob, humanSize, toast } from '/common.js';
+    import { openPdf, renderThumb } from '/pdf-thumbs.js';
+    renderNav();
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.js';
+
+    let file = null, pdf = null, sig = null, sigUrl = null;
+    let currentPage = 0;
+    const scale = 1.5;
+    // placement per page: { x, y, w, h } (points, pdf-lib coordinate pre-conversion = top-left origin)
+    const placements = {};
+
+    const canvas = document.getElementById('pageCanvas');
+    const overlayEl = document.getElementById('overlay');
+    const rail = document.getElementById('rail');
+    const dropEl = document.getElementById('drop');
+    const loadedEl = document.getElementById('loaded');
+    const bar = document.getElementById('bar'), progwrap = document.getElementById('progwrap');
+
+    const dz = makeDropzone(dropEl, { multiple: false });
+    dz.setOnFiles(async arr => {
+      if (!arr.length) return;
+      file = arr[0];
+      pdf = await openPdf(file);
+      document.getElementById('loadedname').textContent = file.name;
+      document.getElementById('loadedpages').textContent = `${pdf.numPages} pages · ${humanSize(file.size)}`;
+      dropEl.classList.add('hidden'); loadedEl.classList.remove('hidden');
+      buildRail();
+      renderPage(0);
+    });
+
+    document.getElementById('changefile').addEventListener('click', () => {
+      file = null; pdf = null;
+      Object.keys(placements).forEach(k => delete placements[k]);
+      dropEl.classList.remove('hidden'); loadedEl.classList.add('hidden');
+    });
+
+    document.getElementById('sigFile').addEventListener('change', e => {
+      sig = e.target.files[0];
+      if (!sig) return;
+      if (sigUrl) URL.revokeObjectURL(sigUrl);
+      sigUrl = URL.createObjectURL(sig);
+      document.getElementById('sigLabel').textContent = `Signature: ${sig.name}`;
+      renderOverlay();
+      toast('Click on the page to place the signature', 'ok');
+    });
+
+    function buildRail() {
+      rail.innerHTML = '';
+      for (let i = 0; i < pdf.numPages; i++) {
+        const tile = document.createElement('div');
+        tile.className = 'rail-tile' + (i === currentPage ? ' active' : '');
+        tile.innerHTML = `<canvas></canvas><div class="label">${i + 1}</div>`;
+        tile.addEventListener('click', () => renderPage(i));
+        rail.appendChild(tile);
+        renderThumb(pdf, i + 1, tile.querySelector('canvas'), 0.25).catch(() => {});
+      }
+    }
+
+    async function renderPage(idx) {
+      currentPage = idx;
+      document.querySelectorAll('.rail-tile').forEach((t, i) => t.classList.toggle('active', i === idx));
+      const page = await pdf.getPage(idx + 1);
+      const viewport = page.getViewport({ scale });
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      overlayEl.style.width = `${viewport.width}px`;
+      overlayEl.style.height = `${viewport.height}px`;
+      renderOverlay();
+    }
+
+    function renderOverlay() {
+      overlayEl.innerHTML = '';
+      const p = placements[currentPage];
+      if (!p || !sigUrl) return;
+      const box = document.createElement('div');
+      box.className = 'sig-box';
+      box.style.left = `${p.x * scale}px`;
+      box.style.top = `${p.y * scale}px`;
+      box.style.width = `${p.w * scale}px`;
+      box.style.height = `${p.h * scale}px`;
+      const img = document.createElement('img');
+      img.src = sigUrl;
+      box.appendChild(img);
+      const resize = document.createElement('div');
+      resize.className = 'resize';
+      box.appendChild(resize);
+      const del = document.createElement('button');
+      del.className = 'del'; del.textContent = '×';
+      del.addEventListener('click', e => { e.stopPropagation(); delete placements[currentPage]; renderOverlay(); });
+      box.appendChild(del);
+
+      box.addEventListener('mousedown', e => {
+        if (e.target === resize || e.target === del) return;
+        e.stopPropagation();
+        const start = { x: e.clientX, y: e.clientY, ox: p.x, oy: p.y };
+        const onMove = ev => {
+          p.x = start.ox + (ev.clientX - start.x) / scale;
+          p.y = start.oy + (ev.clientY - start.y) / scale;
+          box.style.left = `${p.x * scale}px`;
+          box.style.top = `${p.y * scale}px`;
+        };
+        const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+      });
+      resize.addEventListener('mousedown', e => {
+        e.stopPropagation();
+        const start = { x: e.clientX, y: e.clientY, w: p.w, h: p.h };
+        const ratio = p.h / p.w;
+        const onMove = ev => {
+          const dx = (ev.clientX - start.x) / scale;
+          p.w = Math.max(20, start.w + dx);
+          p.h = p.w * ratio;
+          box.style.width = `${p.w * scale}px`;
+          box.style.height = `${p.h * scale}px`;
+        };
+        const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+      });
+
+      overlayEl.appendChild(box);
+    }
+
+    overlayEl.addEventListener('mousedown', e => {
+      if (e.target !== overlayEl) return;
+      if (!sig) return toast('Upload a signature first', 'err');
+      const rect = overlayEl.getBoundingClientRect();
+      const px = (e.clientX - rect.left) / scale;
+      const py = (e.clientY - rect.top) / scale;
+      // Place at natural ratio.
+      const img = new Image();
+      img.onload = () => {
+        const defaultW = 160;
+        const ratio = img.height / img.width;
+        placements[currentPage] = { x: px, y: py, w: defaultW, h: defaultW * ratio };
+        renderOverlay();
+      };
+      img.src = sigUrl;
+    });
+
+    document.getElementById('go').addEventListener('click', async () => {
+      if (!file || !sig) return toast('PDF and signature required', 'err');
+      const entries = Object.entries(placements);
+      if (entries.length === 0) return toast('Place the signature first', 'err');
+      // The sign endpoint supports one placement per request. Loop and chain.
+      let currentBuffer = await file.arrayBuffer();
+      progwrap.classList.remove('hidden'); bar.style.width = '0%';
+      try {
+        for (const [pageStr, p] of entries) {
+          const fd = new FormData();
+          fd.append('file', new Blob([currentBuffer], { type: 'application/pdf' }), 'in.pdf');
+          fd.append('signature', sig);
+          fd.append('page', pageStr);
+          fd.append('x', p.x); fd.append('y', p.y); fd.append('w', p.w); fd.append('h', p.h);
+          const { blob } = await postForm('/api/sign', fd, bar);
+          currentBuffer = await blob.arrayBuffer();
+        }
+        downloadBlob(new Blob([currentBuffer], { type: 'application/pdf' }), 'signed.pdf');
+        toast('Signed', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally { setTimeout(() => progwrap.classList.add('hidden'), 800); }
+    });
+  </script>
+</body>
+</html>

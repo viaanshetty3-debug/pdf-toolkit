@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Edit PDF · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.js"></script>
+  <style>
+    .editor { display: grid; grid-template-columns: 160px 1fr; gap: 16px; margin-top: 20px; }
+    .pages-rail { display: flex; flex-direction: column; gap: 8px; max-height: 70vh; overflow-y: auto; }
+    .rail-tile { background: var(--panel-2); border: 2px solid var(--border); border-radius: 8px; padding: 6px; cursor: pointer; }
+    .rail-tile.active { border-color: var(--accent); }
+    .rail-tile canvas { width: 100%; display: block; background: #fff; border-radius: 4px; }
+    .rail-tile .label { text-align: center; font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .canvas-wrap { position: relative; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 16px; overflow: auto; }
+    .canvas-wrap canvas { display: block; background: #fff; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+    .overlay { position: absolute; inset: 16px; pointer-events: auto; }
+    .overlay svg { position: absolute; top: 0; left: 0; }
+    .overlay-item { position: absolute; cursor: move; }
+    .overlay-item.text { color: var(--text); font-family: Helvetica, Arial, sans-serif; white-space: pre; }
+    .overlay-item.rect { border: 2px solid #e11d48; background: transparent; }
+    .overlay-item.image { }
+    .overlay-item img { width: 100%; height: 100%; display: block; }
+    .overlay-item .del { position: absolute; top: -10px; right: -10px; background: var(--danger); color: #fff; border: none; border-radius: 50%; width: 20px; height: 20px; cursor: pointer; font-size: 11px; }
+    .toolbar { display: flex; gap: 8px; margin-bottom: 10px; }
+    .toolbar .tool-btn { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+    .toolbar .tool-btn.active { background: var(--accent); border-color: var(--accent); }
+    .text-input-pop { position: absolute; background: var(--panel); border: 1px solid var(--accent); border-radius: 8px; padding: 8px; z-index: 10; }
+    .text-input-pop input { width: 220px; }
+  </style>
+</head>
+<body>
+  <header class="topnav"></header>
+  <main style="max-width: 1400px;">
+    <h1>Edit PDF</h1>
+    <p class="subtitle">Add text, images, and rectangles. Click the canvas with a tool selected.</p>
+
+    <div class="dropzone" id="drop">
+      <input type="file" />
+      <div class="big">✎</div>
+      <div><strong>Drop a PDF</strong> or click to browse</div>
+    </div>
+
+    <div id="loaded" class="hidden">
+      <div class="row" style="margin-top: 16px;">
+        <strong id="loadedname"></strong>
+        <span class="pill" id="loadedpages"></span>
+        <div class="spacer"></div>
+        <button class="btn secondary" id="changefile">Change file</button>
+      </div>
+
+      <div class="toolbar">
+        <button class="tool-btn active" data-tool="select">Select</button>
+        <button class="tool-btn" data-tool="text">Add text</button>
+        <button class="tool-btn" data-tool="rect">Rectangle</button>
+        <button class="tool-btn" data-tool="image">
+          <label style="cursor:pointer">Image <input type="file" id="imgInput" accept="image/png,image/jpeg" style="display:none" /></label>
+        </button>
+        <button class="tool-btn" id="undoBtn" title="Undo (⌘Z)" disabled>↶ Undo</button>
+        <button class="tool-btn" id="redoBtn" title="Redo (⌘⇧Z)" disabled>↷ Redo</button>
+        <div class="spacer"></div>
+        <label style="display:flex;align-items:center;gap:6px;color:var(--muted);font-size:13px;">Color <input type="color" id="color" value="#000000" /></label>
+        <label style="display:flex;align-items:center;gap:6px;color:var(--muted);font-size:13px;">Text size <input type="text" id="textSize" value="14" style="width:50px" /></label>
+      </div>
+
+      <div class="editor">
+        <div class="pages-rail" id="rail"></div>
+        <div>
+          <div class="canvas-wrap" id="canvasWrap">
+            <canvas id="pageCanvas"></canvas>
+            <div class="overlay" id="overlay"></div>
+          </div>
+          <div class="row right" style="margin-top: 20px;">
+            <div class="progress hidden" id="progwrap" style="flex:1"><div class="bar" id="bar"></div></div>
+            <button class="btn" id="go">Save & Download</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { renderNav, makeDropzone, postForm, downloadBlob, humanSize, toast } from '/common.js';
+    import { openPdf, renderThumb } from '/pdf-thumbs.js';
+    renderNav();
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.js';
+
+    let file = null, pdf = null;
+    let currentPage = 0;
+    let scale = 1.5;
+    let pageViewports = []; // viewport per page at `scale`
+    let tool = 'select';
+    let pendingImageFile = null;
+    // overlays: array per page, each item { kind, x, y, w, h, text?, size?, color?, imageIndex? }
+    let overlays = [];
+    const uploadedImages = []; // Blob[]
+
+    // Undo/redo: deep-cloned snapshots of `overlays` (uploadedImages are append-only).
+    const undoStack = [];
+    const redoStack = [];
+    const undoBtn = document.getElementById('undoBtn');
+    const redoBtn = document.getElementById('redoBtn');
+    function snapshot() {
+      undoStack.push(JSON.stringify(overlays));
+      if (undoStack.length > 50) undoStack.shift();
+      redoStack.length = 0;
+      refreshUndoButtons();
+    }
+    function refreshUndoButtons() {
+      undoBtn.disabled = undoStack.length === 0;
+      redoBtn.disabled = redoStack.length === 0;
+    }
+    function undo() {
+      if (!undoStack.length) return;
+      redoStack.push(JSON.stringify(overlays));
+      overlays = JSON.parse(undoStack.pop());
+      renderOverlay(); refreshUndoButtons();
+    }
+    function redo() {
+      if (!redoStack.length) return;
+      undoStack.push(JSON.stringify(overlays));
+      overlays = JSON.parse(redoStack.pop());
+      renderOverlay(); refreshUndoButtons();
+    }
+    undoBtn.addEventListener('click', undo);
+    redoBtn.addEventListener('click', redo);
+    window.addEventListener('keydown', e => {
+      if (e.target && /INPUT|TEXTAREA/.test(e.target.tagName)) return;
+      if ((e.key === 'z' || e.key === 'Z') && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        if (e.shiftKey) redo(); else undo();
+      }
+    });
+
+    const dropEl = document.getElementById('drop');
+    const loadedEl = document.getElementById('loaded');
+    const canvas = document.getElementById('pageCanvas');
+    const overlayEl = document.getElementById('overlay');
+    const rail = document.getElementById('rail');
+    const bar = document.getElementById('bar');
+    const progwrap = document.getElementById('progwrap');
+
+    document.querySelectorAll('.tool-btn').forEach(btn => {
+      btn.addEventListener('click', e => {
+        if (btn.dataset.tool === 'image') return; // handled by label click
+        document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        tool = btn.dataset.tool;
+      });
+    });
+
+    document.getElementById('imgInput').addEventListener('change', e => {
+      if (e.target.files[0]) {
+        pendingImageFile = e.target.files[0];
+        document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+        document.querySelector('[data-tool="image"]').classList.add('active');
+        tool = 'image';
+        toast('Click on the page to place the image', 'ok');
+      }
+    });
+
+    const dz = makeDropzone(dropEl, { multiple: false });
+    dz.setOnFiles(async arr => {
+      if (!arr.length) return;
+      file = arr[0];
+      pdf = await openPdf(file);
+      overlays = Array.from({ length: pdf.numPages }, () => []);
+      document.getElementById('loadedname').textContent = file.name;
+      document.getElementById('loadedpages').textContent = `${pdf.numPages} pages · ${humanSize(file.size)}`;
+      dropEl.classList.add('hidden');
+      loadedEl.classList.remove('hidden');
+      buildRail();
+      await renderPage(0);
+    });
+
+    document.getElementById('changefile').addEventListener('click', () => {
+      file = null; pdf = null; overlays = []; uploadedImages.length = 0;
+      dropEl.classList.remove('hidden'); loadedEl.classList.add('hidden');
+    });
+
+    function buildRail() {
+      rail.innerHTML = '';
+      for (let i = 0; i < pdf.numPages; i++) {
+        const tile = document.createElement('div');
+        tile.className = 'rail-tile' + (i === currentPage ? ' active' : '');
+        tile.innerHTML = `<canvas></canvas><div class="label">${i + 1}</div>`;
+        tile.addEventListener('click', () => renderPage(i));
+        rail.appendChild(tile);
+        renderThumb(pdf, i + 1, tile.querySelector('canvas'), 0.25).catch(() => {});
+      }
+    }
+
+    async function renderPage(idx) {
+      currentPage = idx;
+      document.querySelectorAll('.rail-tile').forEach((t, i) => t.classList.toggle('active', i === idx));
+      const page = await pdf.getPage(idx + 1);
+      const viewport = page.getViewport({ scale });
+      pageViewports[idx] = viewport;
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      overlayEl.style.width = `${viewport.width}px`;
+      overlayEl.style.height = `${viewport.height}px`;
+      renderOverlay();
+    }
+
+    function renderOverlay() {
+      overlayEl.innerHTML = '';
+      for (let i = 0; i < overlays[currentPage].length; i++) {
+        const op = overlays[currentPage][i];
+        const el = document.createElement('div');
+        el.className = `overlay-item ${op.kind}`;
+        el.style.left = `${op.x * scale}px`;
+        el.style.top = `${op.y * scale}px`;
+        if (op.kind === 'text') {
+          el.style.fontSize = `${(op.size || 14) * scale}px`;
+          el.style.color = op.color || '#000';
+          el.textContent = op.text;
+        } else if (op.kind === 'rect') {
+          el.style.width = `${op.w * scale}px`;
+          el.style.height = `${op.h * scale}px`;
+          el.style.borderColor = op.color || '#000';
+        } else if (op.kind === 'image') {
+          el.style.width = `${op.w * scale}px`;
+          el.style.height = `${op.h * scale}px`;
+          const img = document.createElement('img');
+          img.src = URL.createObjectURL(uploadedImages[op.imageIndex]);
+          el.appendChild(img);
+        }
+        const del = document.createElement('button');
+        del.className = 'del'; del.textContent = '×';
+        del.addEventListener('click', ev => {
+          ev.stopPropagation();
+          snapshot();
+          overlays[currentPage].splice(i, 1);
+          renderOverlay();
+        });
+        el.appendChild(del);
+        // Drag to reposition.
+        let dragStart = null;
+        el.addEventListener('mousedown', ev => {
+          if (ev.target === del) return;
+          ev.stopPropagation();
+          dragStart = { x: ev.clientX, y: ev.clientY, ox: op.x, oy: op.y };
+          const onMove = e => {
+            op.x = dragStart.ox + (e.clientX - dragStart.x) / scale;
+            op.y = dragStart.oy + (e.clientY - dragStart.y) / scale;
+            el.style.left = `${op.x * scale}px`;
+            el.style.top = `${op.y * scale}px`;
+          };
+          const onUp = () => {
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+          };
+          window.addEventListener('mousemove', onMove);
+          window.addEventListener('mouseup', onUp);
+        });
+        overlayEl.appendChild(el);
+      }
+    }
+
+    overlayEl.addEventListener('mousedown', ev => {
+      if (ev.target !== overlayEl) return;
+      const rect = overlayEl.getBoundingClientRect();
+      const px = (ev.clientX - rect.left) / scale;
+      const py = (ev.clientY - rect.top) / scale;
+      const color = document.getElementById('color').value;
+
+      if (tool === 'text') {
+        const text = prompt('Enter text:');
+        if (text) {
+          snapshot();
+          const size = parseFloat(document.getElementById('textSize').value) || 14;
+          overlays[currentPage].push({ kind: 'text', x: px, y: py, text, size, color });
+          renderOverlay();
+        }
+      } else if (tool === 'rect') {
+        // Drag to size.
+        const start = { x: px, y: py };
+        const temp = document.createElement('div');
+        temp.className = 'overlay-item rect';
+        temp.style.left = `${px * scale}px`;
+        temp.style.top = `${py * scale}px`;
+        temp.style.borderColor = color;
+        overlayEl.appendChild(temp);
+        const onMove = e => {
+          const r = overlayEl.getBoundingClientRect();
+          const cx = (e.clientX - r.left) / scale, cy = (e.clientY - r.top) / scale;
+          const x = Math.min(start.x, cx), y = Math.min(start.y, cy);
+          const w = Math.abs(cx - start.x), h = Math.abs(cy - start.y);
+          temp.style.left = `${x * scale}px`;
+          temp.style.top = `${y * scale}px`;
+          temp.style.width = `${w * scale}px`;
+          temp.style.height = `${h * scale}px`;
+          temp.dataset.x = x; temp.dataset.y = y; temp.dataset.w = w; temp.dataset.h = h;
+        };
+        const onUp = () => {
+          window.removeEventListener('mousemove', onMove);
+          window.removeEventListener('mouseup', onUp);
+          const w = parseFloat(temp.dataset.w || 0), h = parseFloat(temp.dataset.h || 0);
+          if (w > 4 && h > 4) {
+            snapshot();
+            overlays[currentPage].push({ kind: 'rect', x: parseFloat(temp.dataset.x), y: parseFloat(temp.dataset.y), w, h, color });
+          }
+          renderOverlay();
+        };
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+      } else if (tool === 'image' && pendingImageFile) {
+        const img = new Image();
+        img.onload = () => {
+          snapshot();
+          const maxW = 200;
+          const w = Math.min(img.width, maxW);
+          const h = w * img.height / img.width;
+          uploadedImages.push(pendingImageFile);
+          overlays[currentPage].push({ kind: 'image', x: px, y: py, w, h, imageIndex: uploadedImages.length - 1 });
+          pendingImageFile = null;
+          document.getElementById('imgInput').value = '';
+          renderOverlay();
+        };
+        img.src = URL.createObjectURL(pendingImageFile);
+      }
+    });
+
+    document.getElementById('go').addEventListener('click', async () => {
+      if (!file) return;
+      const ops = [];
+      for (let p = 0; p < overlays.length; p++) {
+        for (const o of overlays[p]) {
+          ops.push({ ...o, page: p });
+        }
+      }
+      if (ops.length === 0) return toast('No edits to apply', 'err');
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('ops', JSON.stringify(ops));
+      for (const img of uploadedImages) fd.append('images', img);
+      progwrap.classList.remove('hidden'); bar.style.width = '0%';
+      try {
+        const { blob } = await postForm('/api/edit', fd, bar);
+        downloadBlob(blob, 'edited.pdf');
+        toast('Saved', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally { setTimeout(() => progwrap.classList.add('hidden'), 800); }
+    });
+  </script>
+</body>
+</html>

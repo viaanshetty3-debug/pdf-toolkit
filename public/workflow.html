@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Workflow · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    .pipeline { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
+    .step {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+      padding: 14px 16px;
+      display: grid; grid-template-columns: 32px 1fr auto; gap: 12px; align-items: center;
+    }
+    .step .num { width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; font-size: 13px; }
+    .step .body select, .step .body input { width: 100%; }
+    .step .body .row { gap: 8px; }
+    .step .ctrls { display: flex; gap: 4px; }
+    .step .ctrls button { background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 4px 8px; cursor: pointer; font-size: 12px; }
+    .step .ctrls button:hover { background: var(--panel-2); color: var(--text); }
+    .arrow-down { text-align: center; color: var(--muted-2); font-size: 20px; margin: -2px 0; }
+    .add-step { text-align: center; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>Workflow</h1>
+    <p class="subtitle">Chain tools together. The output of each step becomes the input to the next.</p>
+
+    <div class="card">
+      <div class="row">
+        <strong>Starting file</strong>
+        <div class="spacer"></div>
+        <select id="savedWf" class="hidden" style="width: auto"></select>
+        <button class="btn ghost" id="saveWf">Save workflow</button>
+      </div>
+      <div class="dropzone" id="drop" style="margin-top: 10px;">
+        <input type="file" accept="application/pdf" />
+        <div class="big">▶</div>
+        <div><strong>Drop a PDF</strong> or click to browse</div>
+      </div>
+      <div id="loaded" class="hidden" style="margin-top: 10px;">
+        <div class="file-item">
+          <span class="name" id="fname"></span>
+          <span class="size" id="fsize"></span>
+          <button class="remove" id="clearFile">×</button>
+        </div>
+      </div>
+
+      <div class="pipeline" id="pipeline"></div>
+
+      <div class="add-step">
+        <button class="btn secondary" id="addStep">+ Add step</button>
+      </div>
+
+      <div class="progress hidden" id="progwrap"><div class="bar" id="bar"></div></div>
+      <div id="status" class="subtitle hidden" style="margin-top: 10px;"></div>
+
+      <div class="row right" style="margin-top: 16px;">
+        <button class="btn" id="run" disabled>Run workflow</button>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { renderNav, makeDropzone, downloadBlob, humanSize, toast } from '/common.js';
+    renderNav();
+
+    /** PDF-in / PDF-out tools that are safe to chain. */
+    const CHAIN_TOOLS = [
+      { slug: 'compress',  name: 'Compress',       endpoint: '/api/compress',
+        params: [{ name: 'level', type: 'select', options: ['low','medium','high'], default: 'medium' }] },
+      { slug: 'rotate',    name: 'Rotate',         endpoint: '/api/rotate',
+        params: [{ name: 'angle', type: 'select', options: ['90','180','270'], default: '90' },
+                 { name: 'pages', type: 'text', default: 'all' }] },
+      { slug: 'pagenum',   name: 'Add Page Numbers', endpoint: '/api/pagenum',
+        params: [{ name: 'position', type: 'select', options: ['bottom-center','bottom-left','bottom-right','top-center','top-left','top-right'], default: 'bottom-center' },
+                 { name: 'format', type: 'text', default: '{n}' }] },
+      { slug: 'watermark', name: 'Watermark',      endpoint: '/api/watermark',
+        params: [{ name: 'text', type: 'text', default: 'DRAFT' },
+                 { name: 'opacity', type: 'text', default: '0.3' }] },
+      { slug: 'crop',      name: 'Crop',           endpoint: '/api/crop',
+        params: [{ name: 'top', type: 'text', default: '20' },
+                 { name: 'right', type: 'text', default: '20' },
+                 { name: 'bottom', type: 'text', default: '20' },
+                 { name: 'left', type: 'text', default: '20' }] },
+      { slug: 'resize',    name: 'Resize',         endpoint: '/api/resize',
+        params: [{ name: 'preset', type: 'select', options: ['a4','letter','legal','a3','a5'], default: 'a4' }] },
+      { slug: 'protect',   name: 'Protect',        endpoint: '/api/protect',
+        params: [{ name: 'userPassword', type: 'text', default: 'secret' }] },
+      { slug: 'repair',    name: 'Repair',         endpoint: '/api/repair', params: [] },
+    ];
+
+    let file = null;
+    let steps = [{ tool: 'compress', params: { level: 'medium' } }];
+
+    const dropEl = document.getElementById('drop');
+    const loadedEl = document.getElementById('loaded');
+    const runBtn = document.getElementById('run');
+    const bar = document.getElementById('bar'), progwrap = document.getElementById('progwrap');
+    const statusEl = document.getElementById('status');
+    const pipelineEl = document.getElementById('pipeline');
+
+    const dz = makeDropzone(dropEl, { multiple: false, accept: 'application/pdf' });
+    dz.setOnFiles(arr => {
+      if (!arr.length) return;
+      file = arr[0];
+      document.getElementById('fname').textContent = file.name;
+      document.getElementById('fsize').textContent = humanSize(file.size);
+      dropEl.classList.add('hidden'); loadedEl.classList.remove('hidden');
+      runBtn.disabled = steps.length === 0;
+    });
+    document.getElementById('clearFile').addEventListener('click', () => {
+      file = null;
+      dropEl.classList.remove('hidden'); loadedEl.classList.add('hidden');
+      runBtn.disabled = true;
+    });
+
+    function renderPipeline() {
+      pipelineEl.innerHTML = '';
+      steps.forEach((step, idx) => {
+        const def = CHAIN_TOOLS.find(t => t.slug === step.tool);
+        const row = document.createElement('div');
+        row.className = 'step';
+        row.innerHTML = `
+          <div class="num">${idx + 1}</div>
+          <div class="body">
+            <div class="row">
+              <select data-prop="tool">${CHAIN_TOOLS.map(t => `<option value="${t.slug}" ${t.slug === step.tool ? 'selected' : ''}>${t.name}</option>`).join('')}</select>
+              ${def.params.map(p => {
+                const val = step.params[p.name] ?? p.default;
+                if (p.type === 'select') {
+                  return `<select data-param="${p.name}" style="flex:1">${p.options.map(o => `<option value="${o}" ${o === val ? 'selected' : ''}>${o}</option>`).join('')}</select>`;
+                }
+                return `<input type="text" data-param="${p.name}" value="${val}" style="flex:1" placeholder="${p.name}" />`;
+              }).join('')}
+            </div>
+          </div>
+          <div class="ctrls">
+            <button data-move="-1" ${idx === 0 ? 'disabled' : ''}>↑</button>
+            <button data-move="1" ${idx === steps.length - 1 ? 'disabled' : ''}>↓</button>
+            <button data-del>×</button>
+          </div>
+        `;
+        row.querySelector('[data-prop="tool"]').addEventListener('change', e => {
+          step.tool = e.target.value;
+          const d = CHAIN_TOOLS.find(t => t.slug === step.tool);
+          step.params = Object.fromEntries((d.params || []).map(p => [p.name, p.default]));
+          renderPipeline();
+        });
+        row.querySelectorAll('[data-param]').forEach(el => {
+          el.addEventListener('input', () => { step.params[el.dataset.param] = el.value; });
+        });
+        row.querySelector('[data-del]').addEventListener('click', () => {
+          steps.splice(idx, 1);
+          renderPipeline();
+        });
+        row.querySelectorAll('[data-move]').forEach(b => b.addEventListener('click', () => {
+          const dir = parseInt(b.dataset.move);
+          const j = idx + dir;
+          if (j < 0 || j >= steps.length) return;
+          [steps[idx], steps[j]] = [steps[j], steps[idx]];
+          renderPipeline();
+        }));
+        pipelineEl.appendChild(row);
+        if (idx < steps.length - 1) {
+          const a = document.createElement('div');
+          a.className = 'arrow-down';
+          a.textContent = '↓';
+          pipelineEl.appendChild(a);
+        }
+      });
+    }
+    document.getElementById('addStep').addEventListener('click', () => {
+      const first = CHAIN_TOOLS[0];
+      steps.push({ tool: first.slug, params: Object.fromEntries(first.params.map(p => [p.name, p.default])) });
+      renderPipeline();
+    });
+
+    document.getElementById('run').addEventListener('click', async () => {
+      if (!file) return;
+      runBtn.disabled = true;
+      progwrap.classList.remove('hidden'); bar.style.width = '0%';
+      statusEl.classList.remove('hidden');
+      let current = file;
+      try {
+        for (let i = 0; i < steps.length; i++) {
+          const def = CHAIN_TOOLS.find(t => t.slug === steps[i].tool);
+          statusEl.textContent = `Step ${i + 1}/${steps.length}: ${def.name}...`;
+          const fd = new FormData();
+          fd.append('file', current, current.name || 'input.pdf');
+          for (const [k, v] of Object.entries(steps[i].params || {})) fd.append(k, v);
+          const resp = await fetch(def.endpoint, { method: 'POST', body: fd });
+          if (!resp.ok) throw new Error((await resp.json()).error || `HTTP ${resp.status}`);
+          const blob = await resp.blob();
+          current = new File([blob], `step-${i + 1}.pdf`, { type: 'application/pdf' });
+          bar.style.width = `${((i + 1) / steps.length) * 100}%`;
+        }
+        downloadBlob(current, 'workflow-result.pdf');
+        toast('Workflow complete', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally {
+        runBtn.disabled = false;
+        setTimeout(() => { progwrap.classList.add('hidden'); statusEl.classList.add('hidden'); }, 1000);
+      }
+    });
+
+    // Save/load workflows in localStorage.
+    const SAVED_KEY = 'pdftk-workflows';
+    function loadSaved() {
+      try { return JSON.parse(localStorage.getItem(SAVED_KEY) || '[]'); } catch { return []; }
+    }
+    function renderSaved() {
+      const saved = loadSaved();
+      const sel = document.getElementById('savedWf');
+      if (!saved.length) { sel.classList.add('hidden'); return; }
+      sel.classList.remove('hidden');
+      sel.innerHTML = '<option value="">Load saved…</option>' + saved.map((w, i) => `<option value="${i}">${w.name}</option>`).join('');
+    }
+    document.getElementById('savedWf').addEventListener('change', e => {
+      const saved = loadSaved();
+      const idx = parseInt(e.target.value);
+      if (isNaN(idx)) return;
+      steps = JSON.parse(JSON.stringify(saved[idx].steps));
+      renderPipeline();
+    });
+    document.getElementById('saveWf').addEventListener('click', () => {
+      const name = prompt('Workflow name:');
+      if (!name) return;
+      const saved = loadSaved();
+      saved.push({ name, steps: JSON.parse(JSON.stringify(steps)) });
+      localStorage.setItem(SAVED_KEY, JSON.stringify(saved));
+      renderSaved();
+      toast('Workflow saved', 'ok');
+    });
+
+    renderPipeline();
+    renderSaved();
+  </script>
+</body>
+</html>

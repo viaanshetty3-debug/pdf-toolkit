@@ -1,0 +1,46 @@
+# Build a signed Android APK from the PDF Toolkit PWA inside a container.
+# Avoids installing Android SDK on your host; everything happens in Docker.
+#
+# Usage:
+#   docker build -f mobile/Dockerfile.android -t pdftk-android-builder .
+#   docker run --rm -v $(pwd)/build:/out \
+#     -e PDFTK_SERVER_URL=https://pdftk.example.com \
+#     pdftk-android-builder
+#   # → ./build/app-release-unsigned.apk
+
+FROM eclipse-temurin:17-jdk
+
+ENV ANDROID_HOME=/opt/android-sdk
+ENV PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools"
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl unzip git nodejs npm ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Android cmdline-tools
+RUN mkdir -p $ANDROID_HOME/cmdline-tools \
+ && curl -sL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o cmdline-tools.zip \
+ && unzip -q cmdline-tools.zip -d $ANDROID_HOME/cmdline-tools \
+ && mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest \
+ && rm cmdline-tools.zip \
+ && yes | sdkmanager --licenses >/dev/null \
+ && sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+
+WORKDIR /src
+COPY mobile/package.json mobile/capacitor.config.ts ./
+RUN npm install --no-audit --no-fund
+
+# Copy the PWA assets as the webroot.
+COPY public ./www
+
+# Initialise + add Android platform.
+RUN npx cap sync --no-copy || npx cap add android
+
+CMD sh -c "\
+  cd /src && \
+  npx cap sync android && \
+  cd android && \
+  ./gradlew assembleRelease && \
+  mkdir -p /out && \
+  cp app/build/outputs/apk/release/app-release-unsigned.apk /out/ \
+"

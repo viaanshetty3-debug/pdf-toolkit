@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Extract Pages · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.js"></script>
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>Extract Pages</h1>
+    <p class="subtitle">Pick the pages you want in your new PDF.</p>
+
+    <div class="dropzone" id="drop">
+      <input type="file" />
+      <div class="big">⊞</div>
+      <div><strong>Drop a PDF</strong> or click to browse</div>
+    </div>
+
+    <div id="loaded" class="hidden">
+      <div class="card" style="margin-top: 20px;">
+        <div class="row">
+          <strong id="loadedname"></strong>
+          <span class="pill" id="loadedpages"></span>
+          <span class="pill" id="selcount">0 selected</span>
+          <div class="spacer"></div>
+          <button class="btn secondary" id="selall">Select all</button>
+          <button class="btn secondary" id="selnone">Clear</button>
+          <button class="btn secondary" id="changefile">Change file</button>
+        </div>
+        <div class="pages-grid" id="grid"></div>
+        <div class="progress hidden" id="progwrap"><div class="bar" id="bar"></div></div>
+        <div class="row right" style="margin-top: 20px;">
+          <button class="btn" id="go" disabled>Extract & Download</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { renderNav, makeDropzone, postForm, downloadBlob, humanSize, toast } from '/common.js';
+    import { openPdf, renderThumb } from '/pdf-thumbs.js';
+    renderNav();
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.js';
+
+    let file = null, pdf = null, pageCount = 0;
+    const selected = new Set();
+
+    const dropEl = document.getElementById('drop');
+    const loadedEl = document.getElementById('loaded');
+    const grid = document.getElementById('grid');
+    const goBtn = document.getElementById('go');
+    const selcount = document.getElementById('selcount');
+    const bar = document.getElementById('bar');
+    const progwrap = document.getElementById('progwrap');
+
+    function updateSel() {
+      selcount.textContent = `${selected.size} selected`;
+      goBtn.disabled = selected.size === 0;
+    }
+
+    const dz = makeDropzone(dropEl, { multiple: false });
+    dz.setOnFiles(async arr => {
+      if (!arr.length) return;
+      file = arr[0];
+      try {
+        pdf = await openPdf(file);
+        pageCount = pdf.numPages;
+        document.getElementById('loadedname').textContent = file.name;
+        document.getElementById('loadedpages').textContent = `${pageCount} pages · ${humanSize(file.size)}`;
+        dropEl.classList.add('hidden');
+        loadedEl.classList.remove('hidden');
+        grid.innerHTML = '';
+        selected.clear();
+        updateSel();
+        for (let i = 1; i <= pageCount; i++) {
+          const tile = document.createElement('div');
+          tile.className = 'page-tile';
+          tile.dataset.page = i;
+          tile.innerHTML = `<canvas></canvas><div class="label">Page ${i}</div>`;
+          tile.addEventListener('click', () => {
+            if (selected.has(i)) selected.delete(i); else selected.add(i);
+            tile.classList.toggle('selected');
+            updateSel();
+          });
+          grid.appendChild(tile);
+          renderThumb(pdf, i, tile.querySelector('canvas')).catch(() => {});
+        }
+      } catch (e) { toast(e.message, 'err'); }
+    });
+
+    document.getElementById('changefile').addEventListener('click', () => {
+      file = null; pdf = null;
+      dropEl.classList.remove('hidden');
+      loadedEl.classList.add('hidden');
+    });
+
+    document.getElementById('selall').addEventListener('click', () => {
+      [...grid.children].forEach(t => {
+        selected.add(parseInt(t.dataset.page, 10));
+        t.classList.add('selected');
+      });
+      updateSel();
+    });
+    document.getElementById('selnone').addEventListener('click', () => {
+      selected.clear();
+      [...grid.children].forEach(t => t.classList.remove('selected'));
+      updateSel();
+    });
+
+    goBtn.addEventListener('click', async () => {
+      const ranges = [...selected].sort((a,b)=>a-b).join(',');
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('ranges', ranges);
+      progwrap.classList.remove('hidden'); bar.style.width = '0%';
+      try {
+        const { blob } = await postForm('/api/extract', fd, bar);
+        downloadBlob(blob, 'extracted.pdf');
+        toast('Pages extracted', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally { setTimeout(() => progwrap.classList.add('hidden'), 800); }
+    });
+  </script>
+</body>
+</html>

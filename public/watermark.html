@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Watermark · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>Watermark PDF</h1>
+    <p class="subtitle">Overlay text or an image on every page.</p>
+
+    <div class="dropzone" id="drop">
+      <input type="file" />
+      <div class="big">◍</div>
+      <div><strong>Drop a PDF</strong> or click to browse</div>
+    </div>
+
+    <div id="loaded" class="hidden">
+      <div class="card" style="margin-top: 20px;">
+        <div class="row">
+          <strong id="loadedname"></strong>
+          <span class="pill" id="loadedsize"></span>
+          <div class="spacer"></div>
+          <button class="btn secondary" id="changefile">Change file</button>
+        </div>
+
+        <label class="field">Type</label>
+        <select id="type">
+          <option value="text">Text</option>
+          <option value="image">Image (PNG/JPEG)</option>
+        </select>
+
+        <div id="textWrap">
+          <label class="field">Text</label>
+          <input type="text" id="text" value="CONFIDENTIAL" />
+          <label class="field">Font size (pt)</label>
+          <input type="text" id="fontSize" value="72" />
+        </div>
+
+        <div id="imageWrap" class="hidden">
+          <label class="field">Image file</label>
+          <input type="file" id="imageFile" accept="image/png,image/jpeg" />
+          <label class="field">Scale (fraction of page width)</label>
+          <input type="text" id="scale" value="0.5" />
+        </div>
+
+        <label class="field">Opacity (0–1)</label>
+        <input type="text" id="opacity" value="0.3" />
+
+        <label class="field">Rotation (°)</label>
+        <input type="text" id="rotation" value="-45" />
+
+        <label class="field">Position</label>
+        <select id="position">
+          <option value="center">Center</option>
+          <option value="tile">Tile (repeat)</option>
+        </select>
+
+        <div class="progress hidden" id="progwrap"><div class="bar" id="bar"></div></div>
+
+        <div class="row right" style="margin-top: 20px;">
+          <button class="btn" id="go">Apply & Download</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { renderNav, makeDropzone, postForm, downloadBlob, humanSize, toast } from '/common.js';
+    renderNav();
+    let file = null;
+    const dropEl = document.getElementById('drop'), loadedEl = document.getElementById('loaded');
+    const bar = document.getElementById('bar'), progwrap = document.getElementById('progwrap');
+    const typeEl = document.getElementById('type');
+    const textWrap = document.getElementById('textWrap');
+    const imageWrap = document.getElementById('imageWrap');
+
+    typeEl.addEventListener('change', () => {
+      if (typeEl.value === 'image') { textWrap.classList.add('hidden'); imageWrap.classList.remove('hidden'); }
+      else { textWrap.classList.remove('hidden'); imageWrap.classList.add('hidden'); }
+    });
+
+    const dz = makeDropzone(dropEl, { multiple: false });
+    dz.setOnFiles(arr => {
+      if (!arr.length) return;
+      file = arr[0];
+      document.getElementById('loadedname').textContent = file.name;
+      document.getElementById('loadedsize').textContent = humanSize(file.size);
+      dropEl.classList.add('hidden'); loadedEl.classList.remove('hidden');
+    });
+    document.getElementById('changefile').addEventListener('click', () => {
+      file = null; dropEl.classList.remove('hidden'); loadedEl.classList.add('hidden');
+    });
+    document.getElementById('go').addEventListener('click', async () => {
+      if (!file) return;
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('opacity', document.getElementById('opacity').value);
+      fd.append('rotation', document.getElementById('rotation').value);
+      fd.append('position', document.getElementById('position').value);
+      if (typeEl.value === 'image') {
+        const img = document.getElementById('imageFile').files[0];
+        if (!img) return toast('Choose an image file', 'err');
+        fd.append('image', img);
+        fd.append('scale', document.getElementById('scale').value);
+      } else {
+        fd.append('text', document.getElementById('text').value);
+        fd.append('fontSize', document.getElementById('fontSize').value);
+      }
+      progwrap.classList.remove('hidden'); bar.style.width = '0%';
+      try {
+        const { blob } = await postForm('/api/watermark', fd, bar);
+        downloadBlob(blob, 'watermarked.pdf');
+        toast('Watermarked', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally { setTimeout(() => progwrap.classList.add('hidden'), 800); }
+    });
+  </script>
+</body>
+</html>

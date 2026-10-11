@@ -1,0 +1,3 @@
+(node:1701) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.
+(Use `node --trace-warnings ...` to show where the warning was created)
+PDF Toolkit running on http://localhost:5174

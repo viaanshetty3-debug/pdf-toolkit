@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Batch Processing · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>Batch Processing</h1>
+    <p class="subtitle">Pick a tool, drop many files, run them all. Results come back as a ZIP.</p>
+
+    <div class="card">
+      <label class="field">Tool</label>
+      <select id="toolSelect"></select>
+      <div id="toolParams" style="margin-top: 10px;"></div>
+
+      <label class="field" style="margin-top: 20px;">Files</label>
+      <div class="dropzone" id="drop">
+        <input type="file" />
+        <div class="big">📦</div>
+        <div><strong>Drop files</strong> or click to browse</div>
+      </div>
+      <div class="file-list" id="fileList"></div>
+
+      <div class="progress hidden" id="progwrap"><div class="bar" id="bar"></div></div>
+      <div id="status" class="subtitle hidden" style="margin-top: 10px;"></div>
+
+      <div class="row right" style="margin-top: 20px;">
+        <button class="btn secondary" id="clear">Clear</button>
+        <button class="btn" id="go" disabled>Run on all files</button>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { renderNav, makeDropzone, downloadBlob, humanSize, toast } from '/common.js';
+    renderNav();
+
+    /**
+     * Batch-safe tools: each takes one input file and returns one output file.
+     * `accept` lists input mimetypes/extensions. `params` lets us build a
+     * tiny inline form; everything else is handled identically.
+     */
+    const BATCH_TOOLS = [
+      { slug: 'rotate',   name: 'Rotate PDF',       accept: 'application/pdf', outExt: 'pdf',  endpoint: '/api/rotate',
+        params: [{ name: 'angle', label: 'Angle', type: 'select', options: ['90','180','270'], default: '90' }] },
+      { slug: 'pagenum',  name: 'Add Page Numbers', accept: 'application/pdf', outExt: 'pdf',  endpoint: '/api/pagenum',
+        params: [{ name: 'position', label: 'Position', type: 'select', options: ['bottom-center','bottom-left','bottom-right','top-center','top-left','top-right'], default: 'bottom-center' },
+                 { name: 'format', label: 'Format', type: 'text', default: '{n}' }] },
+      { slug: 'watermark', name: 'Watermark',       accept: 'application/pdf', outExt: 'pdf',  endpoint: '/api/watermark',
+        params: [{ name: 'text', label: 'Text', type: 'text', default: 'DRAFT' },
+                 { name: 'opacity', label: 'Opacity', type: 'text', default: '0.3' }] },
+      { slug: 'crop',     name: 'Crop PDF',         accept: 'application/pdf', outExt: 'pdf',  endpoint: '/api/crop',
+        params: [{ name: 'top', label: 'Top (pt)', type: 'text', default: '20' },
+                 { name: 'right', label: 'Right (pt)', type: 'text', default: '20' },
+                 { name: 'bottom', label: 'Bottom (pt)', type: 'text', default: '20' },
+                 { name: 'left', label: 'Left (pt)', type: 'text', default: '20' }] },
+      { slug: 'compress', name: 'Compress PDF',     accept: 'application/pdf', outExt: 'pdf',  endpoint: '/api/compress',
+        params: [{ name: 'level', label: 'Level', type: 'select', options: ['low','medium','high'], default: 'medium' }] },
+      { slug: 'resize',   name: 'Resize PDF',       accept: 'application/pdf', outExt: 'pdf',  endpoint: '/api/resize',
+        params: [{ name: 'preset', label: 'Preset', type: 'select', options: ['a4','letter','legal','a3','a5'], default: 'a4' }] },
+      { slug: 'repair',   name: 'Repair PDF',       accept: 'application/pdf', outExt: 'pdf',  endpoint: '/api/repair', params: [] },
+      { slug: 'unlock',   name: 'Unlock PDF',       accept: 'application/pdf', outExt: 'pdf',  endpoint: '/api/unlock',
+        params: [{ name: 'password', label: 'Password', type: 'text', default: '' }] },
+      { slug: 'protect',  name: 'Protect PDF',      accept: 'application/pdf', outExt: 'pdf',  endpoint: '/api/protect',
+        params: [{ name: 'userPassword', label: 'Password', type: 'text', default: '' }] },
+      { slug: 'pdf-to-word',  name: 'PDF → Word',  accept: 'application/pdf', outExt: 'docx', endpoint: '/api/pdf-to-word', params: [] },
+      { slug: 'pdf-to-excel', name: 'PDF → Excel', accept: 'application/pdf', outExt: 'xlsx', endpoint: '/api/pdf-to-excel', params: [] },
+      { slug: 'pdf-to-ppt',   name: 'PDF → PPT',   accept: 'application/pdf', outExt: 'pptx', endpoint: '/api/pdf-to-ppt', params: [] },
+      { slug: 'pdf-to-pdfa',  name: 'PDF → PDF/A', accept: 'application/pdf', outExt: 'pdf',  endpoint: '/api/pdf-to-pdfa', params: [] },
+      { slug: 'word-to-pdf',  name: 'Word → PDF',  accept: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', outExt: 'pdf', endpoint: '/api/word-to-pdf', params: [] },
+      { slug: 'excel-to-pdf', name: 'Excel → PDF', accept: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', outExt: 'pdf', endpoint: '/api/excel-to-pdf', params: [] },
+      { slug: 'ppt-to-pdf',   name: 'PPT → PDF',   accept: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', outExt: 'pdf', endpoint: '/api/ppt-to-pdf', params: [] },
+    ];
+
+    const toolSelect = document.getElementById('toolSelect');
+    const toolParamsEl = document.getElementById('toolParams');
+    const fileListEl = document.getElementById('fileList');
+    const dropEl = document.getElementById('drop');
+    const goBtn = document.getElementById('go');
+    const bar = document.getElementById('bar'), progwrap = document.getElementById('progwrap');
+    const statusEl = document.getElementById('status');
+
+    let files = [];
+    let currentTool = BATCH_TOOLS[0];
+
+    toolSelect.innerHTML = BATCH_TOOLS.map(t => `<option value="${t.slug}">${t.name}</option>`).join('');
+    toolSelect.addEventListener('change', () => {
+      currentTool = BATCH_TOOLS.find(t => t.slug === toolSelect.value);
+      renderParams();
+      updateAccept();
+    });
+    function renderParams() {
+      if (!currentTool.params.length) { toolParamsEl.innerHTML = ''; return; }
+      toolParamsEl.innerHTML = currentTool.params.map(p => {
+        if (p.type === 'select') {
+          return `<label class="field">${p.label}</label><select data-pn="${p.name}">${p.options.map(o => `<option value="${o}" ${o === p.default ? 'selected' : ''}>${o}</option>`).join('')}</select>`;
+        }
+        return `<label class="field">${p.label}</label><input type="text" data-pn="${p.name}" value="${p.default}" />`;
+      }).join('');
+    }
+    function updateAccept() {
+      const input = dropEl.querySelector('input');
+      input.accept = currentTool.accept;
+    }
+    renderParams(); updateAccept();
+
+    const dz = makeDropzone(dropEl, { multiple: true, accept: currentTool.accept });
+    dz.setOnFiles(nf => { files = [...files, ...nf]; renderFileList(); });
+    function renderFileList() {
+      fileListEl.innerHTML = files.map((f, i) => `
+        <div class="file-item">
+          <span class="name">${f.name}</span>
+          <span class="size">${humanSize(f.size)}</span>
+          <button class="remove" data-i="${i}">×</button>
+        </div>
+      `).join('');
+      goBtn.disabled = files.length === 0;
+      fileListEl.querySelectorAll('[data-i]').forEach(b => b.addEventListener('click', () => {
+        files.splice(parseInt(b.dataset.i), 1);
+        renderFileList();
+      }));
+    }
+    document.getElementById('clear').addEventListener('click', () => { files = []; renderFileList(); });
+
+    function readParams() {
+      const out = {};
+      toolParamsEl.querySelectorAll('[data-pn]').forEach(el => out[el.dataset.pn] = el.value);
+      return out;
+    }
+
+    goBtn.addEventListener('click', async () => {
+      if (!files.length) return;
+      goBtn.disabled = true;
+      progwrap.classList.remove('hidden'); bar.style.width = '0%';
+      statusEl.classList.remove('hidden');
+      const params = readParams();
+      const zip = new JSZip();
+      let completed = 0;
+      const errors = [];
+      for (const f of files) {
+        statusEl.textContent = `Processing ${f.name} (${completed + 1}/${files.length})...`;
+        const fd = new FormData();
+        fd.append('file', f);
+        for (const [k, v] of Object.entries(params)) fd.append(k, v);
+        try {
+          const resp = await fetch(currentTool.endpoint, { method: 'POST', body: fd });
+          if (!resp.ok) throw new Error((await resp.json()).error || `HTTP ${resp.status}`);
+          const blob = await resp.blob();
+          const base = f.name.replace(/\.[^.]+$/, '');
+          zip.file(`${base}.${currentTool.outExt}`, blob);
+        } catch (e) {
+          errors.push(`${f.name}: ${e.message}`);
+        }
+        completed++;
+        bar.style.width = `${(completed / files.length) * 100}%`;
+      }
+      statusEl.textContent = 'Packaging ZIP...';
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      downloadBlob(zipBlob, `batch-${currentTool.slug}.zip`);
+      if (errors.length) toast(`${errors.length} failed. ${errors[0]}`, 'err');
+      else toast(`Processed ${completed} files`, 'ok');
+      goBtn.disabled = false;
+      setTimeout(() => { progwrap.classList.add('hidden'); statusEl.classList.add('hidden'); }, 1000);
+    });
+  </script>
+</body>
+</html>

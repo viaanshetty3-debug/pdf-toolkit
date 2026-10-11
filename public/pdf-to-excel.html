@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PDF to Excel · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>PDF to Excel</h1>
+    <p class="subtitle">Detects columns by horizontal spacing. Best for invoices, reports, and tabular data; prose will produce one-column rows.</p>
+    <div id="tool"></div>
+  </main>
+  <script type="module">
+    import { mountSingleFileTool } from '/_single-file.js';
+    mountSingleFileTool({
+      endpoint: '/api/pdf-to-excel',
+      outName: 'converted.xlsx',
+      icon: 'X',
+    });
+  </script>
+</body>
+</html>

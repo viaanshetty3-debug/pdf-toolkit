@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Excel to PDF · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>Excel to PDF</h1>
+    <p class="subtitle">Converts .xlsx/.xls/.csv to PDF. Browser engine renders each sheet as a styled table and snapshots to PDF — one page (or more) per sheet.</p>
+
+    <div class="dropzone" id="drop">
+      <input type="file" accept=".xlsx,.xls,.csv" />
+      <div class="big">X</div>
+      <div><strong>Drop a spreadsheet</strong> or click to browse</div>
+    </div>
+
+    <div id="loaded" class="hidden">
+      <div class="card" style="margin-top: 20px;">
+        <div class="row">
+          <strong id="loadedname"></strong>
+          <span class="pill" id="loadedsize"></span>
+          <div class="spacer"></div>
+          <button class="btn secondary" id="changefile">Change file</button>
+        </div>
+
+        <label class="field">Orientation</label>
+        <select id="orient">
+          <option value="landscape" selected>Landscape (better for wide tables)</option>
+          <option value="portrait">Portrait</option>
+        </select>
+
+        <div class="progress hidden" id="progwrap"><div class="bar" id="bar"></div></div>
+        <div id="status" class="subtitle hidden" style="margin-top: 10px;"></div>
+
+        <div class="row right" style="margin-top: 20px;">
+          <button class="btn" id="go">Convert & Download</button>
+        </div>
+      </div>
+    </div>
+
+    <iframe id="render-frame" sandbox="allow-same-origin" style="position:fixed;top:-20000px;left:0;border:0;background:#fff;visibility:hidden;"></iframe>
+  </main>
+
+  <script type="module">
+    import { renderNav, makeDropzone, downloadBlob, humanSize, toast } from '/common.js';
+    renderNav();
+
+    let file = null;
+    const dropEl = document.getElementById('drop'), loadedEl = document.getElementById('loaded');
+    const bar = document.getElementById('bar'), progwrap = document.getElementById('progwrap');
+    const statusEl = document.getElementById('status');
+
+    const dz = makeDropzone(dropEl, { multiple: false, accept: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    dz.setOnFiles(arr => {
+      if (!arr.length) return;
+      file = arr[0];
+      document.getElementById('loadedname').textContent = file.name;
+      document.getElementById('loadedsize').textContent = humanSize(file.size);
+      dropEl.classList.add('hidden'); loadedEl.classList.remove('hidden');
+    });
+    document.getElementById('changefile').addEventListener('click', () => {
+      file = null; dropEl.classList.remove('hidden'); loadedEl.classList.add('hidden');
+    });
+
+    document.getElementById('go').addEventListener('click', async () => {
+      if (!file) return;
+      const orient = document.getElementById('orient').value;
+      progwrap.classList.remove('hidden'); bar.style.width = '10%';
+      statusEl.classList.remove('hidden');
+      try {
+        statusEl.textContent = 'Parsing spreadsheet...';
+        const data = new Uint8Array(await file.arrayBuffer());
+        const wb = XLSX.read(data, { type: 'array', cellStyles: true });
+        bar.style.width = '30%';
+
+        const [PW, PH] = orient === 'landscape' ? [1123, 794] : [794, 1123];
+        const { jsPDF } = window.jspdf;
+        const pdf = new jsPDF({ orientation: orient, unit: 'px', format: [PW, PH], hotfixes: ['px_scaling'] });
+        let first = true;
+
+        for (const name of wb.SheetNames) {
+          statusEl.textContent = `Rendering sheet "${name}"...`;
+          const sheet = wb.Sheets[name];
+          const html = XLSX.utils.sheet_to_html(sheet, { editable: false });
+          const styled = `
+            <style>
+              body { margin: 36px; font-family: 'Calibri', 'Segoe UI', system-ui, sans-serif; font-size: 10pt; color: #000; }
+              h2 { font-size: 14pt; margin: 0 0 10px; color: #2e74b5; font-weight: 500; }
+              table { border-collapse: collapse; width: 100%; }
+              td, th { border: 1px solid #c0c0c0; padding: 4px 8px; vertical-align: top; font-size: 10pt; white-space: nowrap; }
+              tr:first-child td { background: #f2f6fb; font-weight: 600; }
+            </style>
+            <h2>${escapeHtml(name)}</h2>
+            ${html}
+          `;
+
+          const frame = document.getElementById('render-frame');
+          frame.style.width = `${PW}px`;
+          const doc = frame.contentDocument;
+          doc.open(); doc.write(`<!doctype html><html><head><meta charset="utf-8"></head><body>${styled}</body></html>`); doc.close();
+          await new Promise(r => setTimeout(r, 200));
+
+          const canvas = await html2canvas(doc.body, { width: PW, windowWidth: PW, scale: 2, backgroundColor: '#ffffff' });
+          const pageH = PH * 2;
+          const totalPages = Math.ceil(canvas.height / pageH);
+          for (let i = 0; i < totalPages; i++) {
+            if (!first || i > 0) pdf.addPage([PW, PH], orient);
+            first = false;
+            const slice = document.createElement('canvas');
+            slice.width = canvas.width;
+            slice.height = Math.min(pageH, canvas.height - i * pageH);
+            slice.getContext('2d').drawImage(canvas, 0, -i * pageH);
+            pdf.addImage(slice.toDataURL('image/jpeg', 0.9), 'JPEG', 0, 0, PW, slice.height / 2);
+          }
+        }
+        bar.style.width = '100%';
+        downloadBlob(pdf.output('blob'), file.name.replace(/\.[^.]+$/, '.pdf'));
+        toast('Converted', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally { setTimeout(() => { progwrap.classList.add('hidden'); statusEl.classList.add('hidden'); }, 1000); }
+    });
+
+    function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  </script>
+</body>
+</html>

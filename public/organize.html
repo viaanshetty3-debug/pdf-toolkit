@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Organize PDF · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.js"></script>
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>Organize PDF</h1>
+    <p class="subtitle">Reorder, rotate, and delete pages. Drag thumbnails to rearrange.</p>
+
+    <div class="dropzone" id="drop">
+      <input type="file" />
+      <div class="big">◫</div>
+      <div><strong>Drop a PDF</strong> or click to browse</div>
+    </div>
+
+    <div id="loaded" class="hidden">
+      <div class="card" style="margin-top: 20px;">
+        <div class="row">
+          <strong id="loadedname"></strong>
+          <span class="pill" id="loadedpages"></span>
+          <div class="spacer"></div>
+          <button class="btn secondary" id="rotateAll">Rotate all 90°</button>
+          <button class="btn secondary" id="changefile">Change file</button>
+        </div>
+        <div class="pages-grid" id="grid"></div>
+        <div class="progress hidden" id="progwrap"><div class="bar" id="bar"></div></div>
+        <div class="row right" style="margin-top: 20px;">
+          <button class="btn" id="go">Apply & Download</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { renderNav, makeDropzone, postForm, downloadBlob, humanSize, toast } from '/common.js';
+    import { openPdf, renderThumb } from '/pdf-thumbs.js';
+    renderNav();
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.js';
+
+    let file = null, pdf = null;
+    // ops: array of { from: 0-based src index, rotate: 0|90|180|270 }
+    let ops = [];
+
+    const dropEl = document.getElementById('drop');
+    const loadedEl = document.getElementById('loaded');
+    const grid = document.getElementById('grid');
+    const bar = document.getElementById('bar');
+    const progwrap = document.getElementById('progwrap');
+
+    function tileHtml(op) {
+      const rotStyle = op.rotate ? `transform: rotate(${op.rotate}deg); transform-origin: center;` : '';
+      return `
+        <canvas style="${rotStyle}"></canvas>
+        <div class="label">Page ${op.from + 1}${op.rotate ? ` · ${op.rotate}°` : ''}</div>
+        <div class="actions">
+          <button class="mini" data-rot>↻</button>
+          <button class="mini" data-del>✕</button>
+        </div>
+      `;
+    }
+
+    function rebuild() {
+      grid.innerHTML = '';
+      ops.forEach((op, i) => {
+        const tile = document.createElement('div');
+        tile.className = 'page-tile';
+        tile.draggable = true;
+        tile.dataset.idx = i;
+        tile.innerHTML = tileHtml(op);
+        grid.appendChild(tile);
+        renderThumb(pdf, op.from + 1, tile.querySelector('canvas')).catch(() => {});
+      });
+    }
+
+    const dz = makeDropzone(dropEl, { multiple: false });
+    dz.setOnFiles(async arr => {
+      if (!arr.length) return;
+      file = arr[0];
+      try {
+        pdf = await openPdf(file);
+        ops = Array.from({ length: pdf.numPages }, (_, i) => ({ from: i, rotate: 0 }));
+        document.getElementById('loadedname').textContent = file.name;
+        document.getElementById('loadedpages').textContent = `${pdf.numPages} pages · ${humanSize(file.size)}`;
+        dropEl.classList.add('hidden');
+        loadedEl.classList.remove('hidden');
+        rebuild();
+      } catch (e) { toast(e.message, 'err'); }
+    });
+
+    document.getElementById('changefile').addEventListener('click', () => {
+      file = null; pdf = null; ops = [];
+      dropEl.classList.remove('hidden');
+      loadedEl.classList.add('hidden');
+    });
+
+    document.getElementById('rotateAll').addEventListener('click', () => {
+      ops.forEach(op => op.rotate = (op.rotate + 90) % 360);
+      rebuild();
+    });
+
+    grid.addEventListener('click', e => {
+      const tile = e.target.closest('.page-tile');
+      if (!tile) return;
+      const i = parseInt(tile.dataset.idx, 10);
+      if (e.target.hasAttribute('data-rot')) {
+        ops[i].rotate = (ops[i].rotate + 90) % 360;
+        rebuild();
+      } else if (e.target.hasAttribute('data-del')) {
+        ops.splice(i, 1);
+        rebuild();
+      }
+    });
+
+    // Drag-reorder (uses makeReorderable's logic inline because we need to re-sync `ops` from DOM order).
+    let dragged = null;
+    grid.addEventListener('dragstart', e => {
+      const tile = e.target.closest('.page-tile');
+      if (!tile) return;
+      dragged = tile;
+      tile.classList.add('dragging');
+    });
+    grid.addEventListener('dragend', () => {
+      if (dragged) dragged.classList.remove('dragging');
+      dragged = null;
+      // Rebuild ops from current DOM order.
+      const newOps = [...grid.querySelectorAll('.page-tile')].map(t => ops[parseInt(t.dataset.idx, 10)]);
+      ops = newOps;
+      rebuild();
+    });
+    grid.addEventListener('dragover', e => {
+      e.preventDefault();
+      const target = e.target.closest('.page-tile');
+      if (!target || target === dragged || !dragged) return;
+      const rect = target.getBoundingClientRect();
+      const after = (e.clientX - rect.left) / rect.width > 0.5;
+      grid.insertBefore(dragged, after ? target.nextSibling : target);
+    });
+
+    document.getElementById('go').addEventListener('click', async () => {
+      if (!file || ops.length === 0) return toast('No pages to keep', 'err');
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('ops', JSON.stringify(ops));
+      progwrap.classList.remove('hidden'); bar.style.width = '0%';
+      try {
+        const { blob } = await postForm('/api/organize', fd, bar);
+        downloadBlob(blob, 'organized.pdf');
+        toast('Done', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally { setTimeout(() => progwrap.classList.add('hidden'), 800); }
+    });
+  </script>
+</body>
+</html>

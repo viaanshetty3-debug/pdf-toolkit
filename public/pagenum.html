@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Add Page Numbers · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>Add Page Numbers</h1>
+    <p class="subtitle">Pick a position and format. Supports {n} and {total} placeholders.</p>
+
+    <div class="dropzone" id="drop">
+      <input type="file" />
+      <div class="big">№</div>
+      <div><strong>Drop a PDF</strong> or click to browse</div>
+    </div>
+
+    <div id="loaded" class="hidden">
+      <div class="card" style="margin-top: 20px;">
+        <div class="row">
+          <strong id="loadedname"></strong>
+          <span class="pill" id="loadedpages"></span>
+          <div class="spacer"></div>
+          <button class="btn secondary" id="changefile">Change file</button>
+        </div>
+
+        <label class="field">Position</label>
+        <select id="position">
+          <option value="bottom-center">Bottom center</option>
+          <option value="bottom-left">Bottom left</option>
+          <option value="bottom-right">Bottom right</option>
+          <option value="top-center">Top center</option>
+          <option value="top-left">Top left</option>
+          <option value="top-right">Top right</option>
+        </select>
+
+        <label class="field">Format <span class="pill">{n} = page number, {total} = total pages</span></label>
+        <input type="text" id="format" value="{n}" />
+
+        <label class="field">Start numbering from</label>
+        <input type="text" id="startFrom" value="1" />
+
+        <label class="field">Font size (pt)</label>
+        <input type="text" id="fontSize" value="11" />
+
+        <label class="field">Which pages</label>
+        <input type="text" id="pages" value="all" />
+
+        <div class="progress hidden" id="progwrap"><div class="bar" id="bar"></div></div>
+
+        <div class="row right" style="margin-top: 20px;">
+          <button class="btn" id="go">Apply & Download</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { renderNav, makeDropzone, postForm, downloadBlob, humanSize, toast } from '/common.js';
+    renderNav();
+    let file = null;
+    const dropEl = document.getElementById('drop'), loadedEl = document.getElementById('loaded');
+    const bar = document.getElementById('bar'), progwrap = document.getElementById('progwrap');
+
+    const dz = makeDropzone(dropEl, { multiple: false });
+    dz.setOnFiles(async arr => {
+      if (!arr.length) return;
+      file = arr[0];
+      const fd = new FormData(); fd.append('file', file);
+      try {
+        const r = await fetch('/api/inspect', { method: 'POST', body: fd });
+        if (!r.ok) throw new Error((await r.json()).error);
+        const meta = await r.json();
+        document.getElementById('loadedname').textContent = file.name;
+        document.getElementById('loadedpages').textContent = `${meta.pageCount} pages · ${humanSize(file.size)}`;
+        dropEl.classList.add('hidden'); loadedEl.classList.remove('hidden');
+      } catch (e) { toast(e.message, 'err'); }
+    });
+
+    document.getElementById('changefile').addEventListener('click', () => {
+      file = null; dropEl.classList.remove('hidden'); loadedEl.classList.add('hidden');
+    });
+
+    document.getElementById('go').addEventListener('click', async () => {
+      if (!file) return;
+      const fd = new FormData();
+      fd.append('file', file);
+      for (const k of ['position', 'format', 'startFrom', 'fontSize', 'pages']) {
+        fd.append(k, document.getElementById(k).value);
+      }
+      progwrap.classList.remove('hidden'); bar.style.width = '0%';
+      try {
+        const { blob } = await postForm('/api/pagenum', fd, bar);
+        downloadBlob(blob, 'numbered.pdf');
+        toast('Numbered', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally { setTimeout(() => progwrap.classList.add('hidden'), 800); }
+    });
+  </script>
+</body>
+</html>

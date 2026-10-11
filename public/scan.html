@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Scan to PDF · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/jscanify@1.3.0/src/jscanify.min.js"></script>
+  <style>
+    .scan-layout { display: grid; grid-template-columns: 1fr 300px; gap: 16px; margin-top: 20px; }
+    @media (max-width: 760px) { .scan-layout { grid-template-columns: 1fr; } }
+    .camera-wrap { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px; position: relative; }
+    #video { width: 100%; max-height: 60vh; border-radius: 8px; background: #000; display: block; }
+    #overlay { position: absolute; pointer-events: none; }
+    .thumbs { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow-y: auto; }
+    .thumb { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px; position: relative; }
+    .thumb img { width: 100%; display: block; border-radius: 4px; }
+    .thumb .n { position: absolute; top: 4px; left: 4px; background: var(--accent); color: #fff; font-size: 11px; padding: 2px 6px; border-radius: 999px; }
+    .thumb .del { position: absolute; top: 4px; right: 4px; background: var(--danger); color: #fff; border: none; border-radius: 50%; width: 20px; height: 20px; cursor: pointer; font-size: 11px; }
+    .mode-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+    .mode-tabs button { padding: 6px 12px; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; cursor: pointer; font-size: 12px; }
+    .mode-tabs button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  </style>
+</head>
+<body>
+  <header class="topnav"></header>
+  <main style="max-width: 1200px;">
+    <h1>Scan to PDF</h1>
+    <p class="subtitle">Document-aware camera: detects page edges automatically and warps to a flat scan. Toggle enhance for sharper text.</p>
+
+    <div class="scan-layout">
+      <div>
+        <div class="camera-wrap">
+          <video id="video" autoplay playsinline muted></video>
+          <canvas id="overlay"></canvas>
+        </div>
+        <div class="mode-tabs" style="margin-top: 12px;">
+          <button data-mode="color" class="active">Color</button>
+          <button data-mode="grayscale">Grayscale</button>
+          <button data-mode="bw">B&amp;W (enhance)</button>
+        </div>
+        <div class="row">
+          <select id="cameras" class="hidden"></select>
+          <button class="btn secondary" id="start">Start camera</button>
+          <button class="btn" id="capture" disabled>Capture page</button>
+          <div class="spacer"></div>
+          <span id="count" class="pill">0 pages</span>
+        </div>
+      </div>
+      <div class="thumbs" id="thumbs"></div>
+    </div>
+
+    <div class="progress hidden" id="progwrap" style="margin-top: 20px;"><div class="bar" id="bar"></div></div>
+    <div class="row right" style="margin-top: 16px;">
+      <button class="btn secondary" id="clear" disabled>Clear</button>
+      <button class="btn" id="go" disabled>Build PDF & Download</button>
+    </div>
+  </main>
+
+  <script type="module">
+    import { renderNav, postForm, downloadBlob, toast } from '/common.js';
+    renderNav();
+
+    let scanner;
+    const video = document.getElementById('video');
+    const overlay = document.getElementById('overlay');
+    const thumbsEl = document.getElementById('thumbs');
+    const captureBtn = document.getElementById('capture');
+    const startBtn = document.getElementById('start');
+    const camSelect = document.getElementById('cameras');
+    const countEl = document.getElementById('count');
+    const bar = document.getElementById('bar'), progwrap = document.getElementById('progwrap');
+
+    let stream = null;
+    let pages = [];
+    let mode = 'color';
+
+    document.querySelectorAll('.mode-tabs button').forEach(b => b.addEventListener('click', () => {
+      document.querySelectorAll('.mode-tabs button').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      mode = b.dataset.mode;
+    }));
+
+    function updateCount() {
+      countEl.textContent = `${pages.length} page${pages.length === 1 ? '' : 's'}`;
+      document.getElementById('go').disabled = pages.length === 0;
+      document.getElementById('clear').disabled = pages.length === 0;
+    }
+
+    async function startCamera(deviceId) {
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      const constraints = deviceId
+        ? { video: { deviceId: { exact: deviceId } } }
+        : { video: { facingMode: 'environment', width: { ideal: 1920 } } };
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+      video.srcObject = stream;
+      await video.play();
+      captureBtn.disabled = false;
+      // Load jscanify once video is going.
+      try {
+        if (window.jscanify && !scanner) {
+          // jscanify needs OpenCV; it loads it internally on first use.
+          scanner = new window.jscanify();
+          await scanner.loadOpenCV();
+        }
+      } catch (e) { /* jscanify not available — degrade to plain capture */ }
+      drawOverlay();
+      await listCameras();
+    }
+
+    async function listCameras() {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const cams = devices.filter(d => d.kind === 'videoinput');
+        if (cams.length > 1) {
+          camSelect.innerHTML = cams.map((c, i) => `<option value="${c.deviceId}">${c.label || `Camera ${i + 1}`}</option>`).join('');
+          camSelect.classList.remove('hidden');
+        }
+      } catch {}
+    }
+
+    function drawOverlay() {
+      if (!scanner || !video.videoWidth) {
+        requestAnimationFrame(drawOverlay);
+        return;
+      }
+      overlay.width = video.clientWidth;
+      overlay.height = video.clientHeight;
+      overlay.style.width = `${video.clientWidth}px`;
+      overlay.style.height = `${video.clientHeight}px`;
+      overlay.style.left = `${video.offsetLeft}px`;
+      overlay.style.top = `${video.offsetTop}px`;
+      try {
+        const highlighted = scanner.highlightPaper(video, { color: '#a78bfa', thickness: 3 });
+        const ctx = overlay.getContext('2d');
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.drawImage(highlighted, 0, 0, overlay.width, overlay.height);
+      } catch { /* no doc detected this frame */ }
+      requestAnimationFrame(drawOverlay);
+    }
+
+    startBtn.addEventListener('click', async () => {
+      try { await startCamera(); } catch (e) { toast('Camera error: ' + e.message, 'err'); }
+    });
+    camSelect.addEventListener('change', () => startCamera(camSelect.value).catch(e => toast(e.message, 'err')));
+
+    captureBtn.addEventListener('click', async () => {
+      const srcCanvas = document.createElement('canvas');
+      srcCanvas.width = video.videoWidth;
+      srcCanvas.height = video.videoHeight;
+      srcCanvas.getContext('2d').drawImage(video, 0, 0);
+      let outCanvas = srcCanvas;
+      try {
+        if (scanner) {
+          // Warp to flattened page.
+          outCanvas = scanner.extractPaper(srcCanvas, srcCanvas.width, srcCanvas.height);
+        }
+      } catch { /* fall back to raw */ }
+
+      // Apply mode filter.
+      if (mode !== 'color') {
+        const ctx = outCanvas.getContext('2d');
+        const imageData = ctx.getImageData(0, 0, outCanvas.width, outCanvas.height);
+        const d = imageData.data;
+        if (mode === 'grayscale') {
+          for (let i = 0; i < d.length; i += 4) {
+            const g = (d[i] * 0.3 + d[i + 1] * 0.59 + d[i + 2] * 0.11) | 0;
+            d[i] = d[i + 1] = d[i + 2] = g;
+          }
+        } else if (mode === 'bw') {
+          for (let i = 0; i < d.length; i += 4) {
+            const g = (d[i] * 0.3 + d[i + 1] * 0.59 + d[i + 2] * 0.11);
+            const v = g > 180 ? 255 : 0;
+            d[i] = d[i + 1] = d[i + 2] = v;
+          }
+        }
+        ctx.putImageData(imageData, 0, 0);
+      }
+
+      outCanvas.toBlob(blob => {
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        pages.push({ blob, url });
+        renderThumbs();
+      }, 'image/jpeg', 0.92);
+    });
+
+    function renderThumbs() {
+      thumbsEl.innerHTML = '';
+      pages.forEach((p, i) => {
+        const el = document.createElement('div');
+        el.className = 'thumb';
+        el.innerHTML = `<div class="n">${i + 1}</div><img src="${p.url}" /><button class="del">×</button>`;
+        el.querySelector('.del').addEventListener('click', () => {
+          URL.revokeObjectURL(p.url);
+          pages.splice(i, 1);
+          renderThumbs();
+        });
+        thumbsEl.appendChild(el);
+      });
+      updateCount();
+    }
+
+    document.getElementById('clear').addEventListener('click', () => {
+      pages.forEach(p => URL.revokeObjectURL(p.url));
+      pages = [];
+      renderThumbs();
+    });
+
+    document.getElementById('go').addEventListener('click', async () => {
+      if (!pages.length) return;
+      const fd = new FormData();
+      pages.forEach((p, i) => fd.append('frames', p.blob, `scan_${i + 1}.jpg`));
+      progwrap.classList.remove('hidden'); bar.style.width = '0%';
+      try {
+        const { blob } = await postForm('/api/scan', fd, bar);
+        downloadBlob(blob, 'scanned.pdf');
+        toast('Scanned', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally { setTimeout(() => progwrap.classList.add('hidden'), 800); }
+    });
+  </script>
+</body>
+</html>

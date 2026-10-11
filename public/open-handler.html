@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Opening... · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>Opening PDF</h1>
+    <p class="subtitle">Loading the PDF into the viewer...</p>
+    <noscript>
+      <p>JavaScript is required. <a href="/viewer.html">Go to the viewer</a>.</p>
+    </noscript>
+  </main>
+  <script type="module">
+    // When OS routes "Open with PDF Toolkit" here, launchQueue delivers the handles.
+    if ('launchQueue' in window) {
+      window.launchQueue.setConsumer(async (launchParams) => {
+        if (!launchParams.files.length) { location.href = '/viewer.html'; return; }
+        const handle = launchParams.files[0];
+        const file = await handle.getFile();
+        // Stash in sessionStorage then jump to viewer.
+        const reader = new FileReader();
+        reader.onload = () => {
+          sessionStorage.setItem('pdftk-launch-file', JSON.stringify({ name: file.name, type: file.type, base64: reader.result.split(',')[1] }));
+          location.href = '/viewer.html?from=handler';
+        };
+        reader.readAsDataURL(file);
+      });
+    } else {
+      location.href = '/viewer.html';
+    }
+  </script>
+</body>
+</html>

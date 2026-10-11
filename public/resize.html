@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Resize PDF · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>Resize PDF</h1>
+    <p class="subtitle">Change the page dimensions. Content is centered and scaled to fit (no distortion).</p>
+    <div id="tool"></div>
+  </main>
+  <script type="module">
+    import { mountSingleFileTool } from '/_single-file.js';
+    const tool = mountSingleFileTool({
+      endpoint: '/api/resize',
+      outName: 'resized.pdf',
+      icon: 'crop',
+      extraFields: () => ({
+        preset: document.getElementById('preset').value,
+        width: document.getElementById('width').value,
+        height: document.getElementById('height').value,
+        fit: document.getElementById('fit').value,
+        orientation: document.getElementById('orientation').value,
+      }),
+    });
+    tool.getFormSlot().innerHTML = `
+      <label class="field">Target size</label>
+      <select id="preset">
+        <option value="a4" selected>A4 (595 × 842 pt)</option>
+        <option value="letter">US Letter (612 × 792 pt)</option>
+        <option value="legal">US Legal (612 × 1008 pt)</option>
+        <option value="tabloid">US Tabloid (792 × 1224 pt)</option>
+        <option value="a3">A3 (842 × 1191 pt)</option>
+        <option value="a5">A5 (420 × 595 pt)</option>
+        <option value="a6">A6 (298 × 420 pt)</option>
+        <option value="custom">Custom...</option>
+      </select>
+      <div class="row" id="custom-dims" style="display:none;margin-top:10px;">
+        <div style="flex:1"><label class="field">Width (pt)</label><input id="width" type="text" value="595" /></div>
+        <div style="flex:1"><label class="field">Height (pt)</label><input id="height" type="text" value="842" /></div>
+      </div>
+      <label class="field">Orientation</label>
+      <select id="orientation">
+        <option value="auto" selected>Auto (match source)</option>
+        <option value="portrait">Portrait</option>
+        <option value="landscape">Landscape</option>
+      </select>
+      <label class="field">Fit mode</label>
+      <select id="fit">
+        <option value="fit" selected>Fit — preserve aspect ratio</option>
+        <option value="fill">Fill — stretch to fill</option>
+      </select>
+    `;
+    const preset = document.getElementById('preset');
+    const custom = document.getElementById('custom-dims');
+    preset.addEventListener('change', () => {
+      custom.style.display = preset.value === 'custom' ? 'flex' : 'none';
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "name": "pdf-toolkit-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "init": "cap init 'PDF Toolkit' com.pdftoolkit.app --web-dir=www",
+    "sync": "cap sync",
+    "add:android": "cap add android",
+    "add:ios": "cap add ios",
+    "build:android": "cap sync android && cd android && ./gradlew assembleRelease",
+    "build:ios": "cap sync ios && cap open ios",
+    "dev": "cap run android --live-reload --external --host 0.0.0.0"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/core": "^6.1.2",
+    "@capacitor/ios": "^6.1.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.2"
+  }
+}

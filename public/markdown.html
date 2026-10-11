@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PDF to Markdown · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>PDF to Markdown</h1>
+    <p class="subtitle">Reconstruct Markdown structure — headings, lists, tables — using Gemini.</p>
+
+    <div id="banner" class="card hidden" style="border-left: 3px solid var(--danger); margin-bottom: 16px;">
+      <strong>No API key configured.</strong> Set <code>GEMINI_API_KEY</code> and restart.
+    </div>
+
+    <div class="dropzone" id="drop">
+      <input type="file" />
+      <div class="big">📝</div>
+      <div><strong>Drop a PDF</strong> or click to browse</div>
+    </div>
+
+    <div id="loaded" class="hidden">
+      <div class="card" style="margin-top: 20px;">
+        <div class="row">
+          <strong id="loadedname"></strong>
+          <span class="pill" id="loadedsize"></span>
+          <div class="spacer"></div>
+          <button class="btn secondary" id="changefile">Change file</button>
+        </div>
+
+        <div class="progress hidden" id="progwrap"><div class="bar" id="bar"></div></div>
+
+        <div class="row right" style="margin-top: 20px;">
+          <button class="btn" id="go">Convert & Download</button>
+        </div>
+
+        <pre id="preview" class="card hidden" style="margin-top: 20px; background: var(--panel-2); border-left: 3px solid var(--accent); white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 13px; max-height: 60vh; overflow: auto;"></pre>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { renderNav, makeDropzone, postForm, downloadBlob, humanSize, toast } from '/common.js';
+    renderNav();
+
+    (async () => {
+      try {
+        const r = await fetch('/api/ai/status');
+        const s = await r.json();
+        if (!s.configured) document.getElementById('banner').classList.remove('hidden');
+      } catch {}
+    })();
+
+    let file = null;
+    const dropEl = document.getElementById('drop'), loadedEl = document.getElementById('loaded');
+    const bar = document.getElementById('bar'), progwrap = document.getElementById('progwrap');
+    const previewEl = document.getElementById('preview');
+
+    const dz = makeDropzone(dropEl, { multiple: false });
+    dz.setOnFiles(arr => {
+      if (!arr.length) return;
+      file = arr[0];
+      document.getElementById('loadedname').textContent = file.name;
+      document.getElementById('loadedsize').textContent = humanSize(file.size);
+      dropEl.classList.add('hidden'); loadedEl.classList.remove('hidden');
+      previewEl.classList.add('hidden');
+    });
+    document.getElementById('changefile').addEventListener('click', () => {
+      file = null;
+      dropEl.classList.remove('hidden'); loadedEl.classList.add('hidden');
+    });
+
+    document.getElementById('go').addEventListener('click', async () => {
+      if (!file) return;
+      const fd = new FormData();
+      fd.append('file', file);
+      progwrap.classList.remove('hidden'); bar.style.width = '20%';
+      try {
+        const { blob } = await postForm('/api/ai/markdown', fd, bar);
+        const text = await blob.text();
+        previewEl.textContent = text;
+        previewEl.classList.remove('hidden');
+        downloadBlob(new Blob([text], { type: 'text/markdown' }), 'converted.md');
+        toast('Converted', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally { setTimeout(() => progwrap.classList.add('hidden'), 800); }
+    });
+  </script>
+</body>
+</html>

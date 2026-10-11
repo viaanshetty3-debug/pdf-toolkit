@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PDF to PowerPoint · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>PDF to PowerPoint</h1>
+    <p class="subtitle">One slide per PDF page. The first line of each page becomes the slide title.</p>
+    <div id="tool"></div>
+  </main>
+  <script type="module">
+    import { mountSingleFileTool } from '/_single-file.js';
+    mountSingleFileTool({
+      endpoint: '/api/pdf-to-ppt',
+      outName: 'converted.pptx',
+      icon: 'P',
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PDF Toolkit — 33 premium PDF tools, unlimited and free</title>
+  <meta name="description" content="Merge, split, compress, convert, sign, redact, OCR, translate — 33 pro-grade PDF tools running locally. No file size caps, no watermarks, no ads." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23a78bfa'/%3E%3Ctext x='50' y='70' font-size='56' font-family='Inter,sans-serif' font-weight='700' text-anchor='middle' fill='white'%3EP%3C/text%3E%3C/svg%3E" />
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <section class="hero">
+      <span class="eyebrow"><span class="dot"></span>33 tools · unlimited usage · local processing</span>
+      <h1>Every PDF tool you'll ever need, <span class="grad">in one place.</span></h1>
+      <p class="lede">
+        Merge, split, convert, compress, sign, redact, OCR, translate — pro-grade.
+        Runs on your own server, so there are no file-size caps, no watermarks, and no ads.
+      </p>
+      <div class="cta-row">
+        <button class="btn" id="cta-search">
+          <span id="cta-icon"></span>
+          Find a tool · <span class="kbd" style="background:rgba(255,255,255,.15);color:#fff;border-color:rgba(255,255,255,.3)">⌘K</span>
+        </button>
+        <a href="#tools" class="btn secondary">Browse all 33</a>
+      </div>
+      <div class="feat-row">
+        <span><span id="f1"></span> Unlimited file size</span>
+        <span><span id="f2"></span> No watermarks</span>
+        <span><span id="f3"></span> Files never leave your machine</span>
+        <span><span id="f4"></span> No tracking, no ads</span>
+      </div>
+    </section>
+
+    <div id="recent"></div>
+    <div id="tools"></div>
+  </main>
+
+  <script type="module">
+    import { TOOLS, CATEGORIES, toolsByCategory, renderNav, icon, getHistory, deleteHistoryEntry, downloadBlob } from '/common.js';
+    renderNav();
+
+    // Recent files section (if any).
+    (async () => {
+      const hist = await getHistory();
+      if (!hist.length) return;
+      const toolName = slug => TOOLS.find(t => t.slug === slug)?.name || slug;
+      const toolIcon = slug => TOOLS.find(t => t.slug === slug)?.icon || 'file-text';
+      const section = document.createElement('section');
+      section.className = 'history';
+      section.innerHTML = `
+        <div class="category-head">
+          <span class="label">Recent</span>
+          <span class="count">${hist.length} file${hist.length === 1 ? '' : 's'}</span>
+          <div style="flex:1"></div>
+          <button class="btn ghost" id="clear-hist" style="padding:4px 10px;font-size:12px">Clear all</button>
+        </div>
+        <div class="history-row">
+          ${hist.slice(0, 8).map(h => `
+            <div class="history-item" data-id="${h.id}">
+              <div class="icon">${icon(toolIcon(h.tool), 14)}</div>
+              <div class="meta">
+                <div class="name" title="${h.filename}">${h.filename}</div>
+                <div class="cat">${toolName(h.tool)} · ${new Date(h.when).toLocaleString()}</div>
+              </div>
+              <div class="actions">
+                <button data-dl>Download</button>
+                <button class="del" data-del>×</button>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      `;
+      document.getElementById('recent').appendChild(section);
+      section.querySelectorAll('.history-item').forEach(el => {
+        const id = Number(el.dataset.id);
+        const entry = hist.find(h => h.id === id);
+        el.querySelector('[data-dl]').addEventListener('click', () => downloadBlob(entry.blob, entry.filename));
+        el.querySelector('[data-del]').addEventListener('click', async () => {
+          await deleteHistoryEntry(id);
+          el.remove();
+        });
+      });
+      section.querySelector('#clear-hist').addEventListener('click', async () => {
+        (await import('/history.js')).clearHistory();
+        section.remove();
+      });
+    })();
+
+    // Hero icons.
+    document.getElementById('cta-icon').innerHTML = icon('search', 14);
+    for (const id of ['f1', 'f2', 'f3', 'f4']) document.getElementById(id).innerHTML = icon('check', 14);
+    document.getElementById('cta-search').addEventListener('click', () => {
+      // Trigger palette via a synthetic ⌘K.
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }));
+    });
+
+    // Render categories.
+    const byCat = toolsByCategory();
+    const groups = CATEGORIES.map(c => {
+      const tools = byCat.get(c.name);
+      return `
+        <section class="category" style="--cat: var(${c.colorVar})">
+          <div class="category-head">
+            <span class="accent"></span>
+            <span class="label">${c.name}</span>
+            <span class="count">${tools.length} tool${tools.length === 1 ? '' : 's'}</span>
+          </div>
+          <div class="grid">
+            ${tools.map(t => `
+              <a class="tool-card" href="/${t.slug}.html">
+                <div class="icon">${icon(t.icon, 20)}</div>
+                <div class="name">${t.name}</div>
+                <div class="desc">${t.desc}</div>
+                <span class="arrow">${icon('arrow-up-right', 16)}</span>
+              </a>
+            `).join('')}
+          </div>
+        </section>
+      `;
+    }).join('');
+    document.getElementById('tools').innerHTML = groups;
+  </script>
+</body>
+</html>

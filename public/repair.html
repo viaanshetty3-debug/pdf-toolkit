@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Repair PDF · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>Repair PDF</h1>
+    <p class="subtitle">Rebuild a damaged PDF. Uses qpdf first; falls back to pdf-lib for softer errors.</p>
+    <div id="tool"></div>
+  </main>
+  <script type="module">
+    import { mountSingleFileTool } from '/_single-file.js';
+    const tool = mountSingleFileTool({
+      endpoint: '/api/repair',
+      outName: 'repaired.pdf',
+      icon: '🔧',
+      onResponse: (_blob, headers) => {
+        const strategy = headers.getResponseHeader('x-repair-strategy');
+        const warnings = headers.getResponseHeader('x-repair-warnings');
+        tool.getResultSlot().innerHTML = `
+          <div class="stat-row" style="margin-top: 16px;"><span class="k">Strategy</span><span>${strategy || '—'}</span></div>
+          <div class="stat-row"><span class="k">Warnings</span><span>${warnings || '0'}</span></div>
+        `;
+      },
+    });
+  </script>
+</body>
+</html>

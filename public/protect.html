@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Protect PDF · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>Protect PDF</h1>
+    <p class="subtitle">Add password protection with AES-256 encryption.</p>
+
+    <div class="dropzone" id="drop">
+      <input type="file" />
+      <div class="big">🔒</div>
+      <div><strong>Drop a PDF</strong> or click to browse</div>
+    </div>
+
+    <div id="loaded" class="hidden">
+      <div class="card" style="margin-top: 20px;">
+        <div class="row">
+          <strong id="loadedname"></strong>
+          <span class="pill" id="loadedsize"></span>
+          <div class="spacer"></div>
+          <button class="btn secondary" id="changefile">Change file</button>
+        </div>
+
+        <label class="field">Open password (required)</label>
+        <input type="text" id="userPassword" />
+
+        <label class="field">Owner password <span class="pill">optional — controls permissions</span></label>
+        <input type="text" id="ownerPassword" placeholder="Same as open password if left blank" />
+
+        <label class="field">Encryption</label>
+        <select id="keyLength">
+          <option value="256">AES-256 (recommended)</option>
+          <option value="128">AES-128</option>
+          <option value="40">RC4-40 (legacy)</option>
+        </select>
+
+        <div class="row" style="margin-top: 10px;">
+          <label><input type="checkbox" id="printing" checked /> Allow printing</label>
+          <label><input type="checkbox" id="modify" /> Allow modification</label>
+          <label><input type="checkbox" id="extract" /> Allow text/image extraction</label>
+        </div>
+
+        <div class="progress hidden" id="progwrap"><div class="bar" id="bar"></div></div>
+
+        <div class="row right" style="margin-top: 20px;">
+          <button class="btn" id="go">Protect & Download</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { renderNav, makeDropzone, postForm, downloadBlob, humanSize, toast } from '/common.js';
+    renderNav();
+    let file = null;
+    const dropEl = document.getElementById('drop'), loadedEl = document.getElementById('loaded');
+    const bar = document.getElementById('bar'), progwrap = document.getElementById('progwrap');
+
+    const dz = makeDropzone(dropEl, { multiple: false });
+    dz.setOnFiles(arr => {
+      if (!arr.length) return;
+      file = arr[0];
+      document.getElementById('loadedname').textContent = file.name;
+      document.getElementById('loadedsize').textContent = humanSize(file.size);
+      dropEl.classList.add('hidden'); loadedEl.classList.remove('hidden');
+    });
+    document.getElementById('changefile').addEventListener('click', () => {
+      file = null; dropEl.classList.remove('hidden'); loadedEl.classList.add('hidden');
+    });
+    document.getElementById('go').addEventListener('click', async () => {
+      if (!file) return;
+      const user = document.getElementById('userPassword').value;
+      if (!user) return toast('Open password required', 'err');
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('userPassword', user);
+      fd.append('ownerPassword', document.getElementById('ownerPassword').value || user);
+      fd.append('keyLength', document.getElementById('keyLength').value);
+      fd.append('printing', document.getElementById('printing').checked ? 'allow' : 'none');
+      fd.append('modify', document.getElementById('modify').checked ? 'allow' : 'none');
+      fd.append('extract', document.getElementById('extract').checked ? 'allow' : 'none');
+      progwrap.classList.remove('hidden'); bar.style.width = '0%';
+      try {
+        const { blob } = await postForm('/api/protect', fd, bar);
+        downloadBlob(blob, 'protected.pdf');
+        toast('Protected', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally { setTimeout(() => progwrap.classList.add('hidden'), 800); }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PDF to PDF/A · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>PDF to PDF/A</h1>
+    <p class="subtitle">Produce an archival PDF/A that complies with ISO 19005. Powered by Ghostscript.</p>
+    <div id="tool"></div>
+  </main>
+  <script type="module">
+    import { mountSingleFileTool } from '/_single-file.js';
+    const tool = mountSingleFileTool({
+      endpoint: '/api/pdf-to-pdfa',
+      outName: 'pdfa.pdf',
+      icon: '🗄',
+      extraFields: () => ({ level: document.getElementById('level').value }),
+    });
+    tool.getFormSlot().innerHTML = `
+      <label class="field">Conformance level</label>
+      <select id="level">
+        <option value="2b" selected>PDF/A-2b (recommended)</option>
+        <option value="1b">PDF/A-1b</option>
+        <option value="3b">PDF/A-3b</option>
+      </select>
+    `;
+  </script>
+</body>
+</html>

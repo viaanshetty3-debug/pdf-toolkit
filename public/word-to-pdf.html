@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Word to PDF · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/mammoth@1.7.2/mammoth.browser.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>Word to PDF</h1>
+    <p class="subtitle">Converts .docx to PDF using your browser's layout engine — real text, real styles, real embedded images. Falls back to the server pipeline if client-side rendering fails.</p>
+
+    <div class="dropzone" id="drop">
+      <input type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+      <div class="big">W</div>
+      <div><strong>Drop a .docx</strong> or click to browse</div>
+    </div>
+
+    <div id="loaded" class="hidden">
+      <div class="card" style="margin-top: 20px;">
+        <div class="row">
+          <strong id="loadedname"></strong>
+          <span class="pill" id="loadedsize"></span>
+          <div class="spacer"></div>
+          <button class="btn secondary" id="changefile">Change file</button>
+        </div>
+
+        <label class="field">Rendering engine</label>
+        <select id="engine">
+          <option value="browser" selected>Browser (recommended — preserves styles + images)</option>
+          <option value="server">Server (text-only; fallback)</option>
+        </select>
+
+        <div class="progress hidden" id="progwrap"><div class="bar" id="bar"></div></div>
+        <div id="status" class="subtitle hidden" style="margin-top: 10px;"></div>
+
+        <div class="row right" style="margin-top: 20px;">
+          <button class="btn" id="go">Convert & Download</button>
+        </div>
+      </div>
+    </div>
+
+    <iframe id="render-frame" sandbox="allow-same-origin" style="position:fixed;top:-20000px;left:0;width:794px;border:0;background:#fff;visibility:hidden;"></iframe>
+  </main>
+
+  <script type="module">
+    import { renderNav, makeDropzone, postForm, downloadBlob, humanSize, toast } from '/common.js';
+    renderNav();
+
+    let file = null;
+    const dropEl = document.getElementById('drop'), loadedEl = document.getElementById('loaded');
+    const bar = document.getElementById('bar'), progwrap = document.getElementById('progwrap');
+    const statusEl = document.getElementById('status');
+
+    const dz = makeDropzone(dropEl, { multiple: false, accept: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    dz.setOnFiles(arr => {
+      if (!arr.length) return;
+      file = arr[0];
+      document.getElementById('loadedname').textContent = file.name;
+      document.getElementById('loadedsize').textContent = humanSize(file.size);
+      dropEl.classList.add('hidden'); loadedEl.classList.remove('hidden');
+    });
+    document.getElementById('changefile').addEventListener('click', () => {
+      file = null; dropEl.classList.remove('hidden'); loadedEl.classList.add('hidden');
+    });
+
+    document.getElementById('go').addEventListener('click', async () => {
+      if (!file) return;
+      const engine = document.getElementById('engine').value;
+      progwrap.classList.remove('hidden'); bar.style.width = '10%';
+      statusEl.classList.remove('hidden');
+      try {
+        if (engine === 'browser') await renderBrowser();
+        else await renderServer();
+        toast('Converted', 'ok');
+      } catch (e) {
+        toast(`${e.message}. Falling back to server...`, 'err');
+        try { await renderServer(); toast('Server fallback OK', 'ok'); }
+        catch (e2) { toast(e2.message, 'err'); }
+      }
+      finally { setTimeout(() => { progwrap.classList.add('hidden'); statusEl.classList.add('hidden'); }, 1000); }
+    });
+
+    async function renderBrowser() {
+      statusEl.textContent = 'Parsing .docx...';
+      const buffer = await file.arrayBuffer();
+      const { value: html } = await window.mammoth.convertToHtml({ arrayBuffer: buffer });
+      bar.style.width = '35%';
+      statusEl.textContent = 'Rendering with browser engine...';
+      // Reasonable word-doc styling.
+      const css = `
+        body { margin: 72px; font-family: 'Calibri', 'Segoe UI', system-ui, sans-serif; font-size: 11pt; line-height: 1.5; color: #000; }
+        h1 { font-size: 20pt; font-weight: 400; color: #2e74b5; margin: 24pt 0 6pt; }
+        h2 { font-size: 15pt; font-weight: 400; color: #2e74b5; margin: 18pt 0 4pt; }
+        h3 { font-size: 13pt; font-weight: 400; color: #1f4e79; margin: 12pt 0 4pt; }
+        p { margin: 0 0 8pt; }
+        strong { font-weight: 700; }
+        em { font-style: italic; }
+        ul, ol { padding-left: 2.5em; }
+        li { margin: 2pt 0; }
+        table { border-collapse: collapse; width: 100%; margin: 8pt 0; }
+        th, td { border: 1px solid #999; padding: 6pt 10pt; vertical-align: top; }
+        th { background: #f2f2f2; font-weight: 700; text-align: left; }
+        img { max-width: 100%; height: auto; }
+      `;
+
+      const frame = document.getElementById('render-frame');
+      const doc = frame.contentDocument;
+      doc.open();
+      doc.write(`<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body>${html}</body></html>`);
+      doc.close();
+      // Let images load.
+      await new Promise(r => setTimeout(r, 500));
+      const PW = 794;  // A4 width @ 96dpi
+      const PH = 1123;
+      bar.style.width = '55%';
+      statusEl.textContent = 'Snapshotting pages...';
+
+      const canvas = await html2canvas(doc.body, {
+        width: PW,
+        windowWidth: PW,
+        scale: 2,
+        backgroundColor: '#ffffff',
+        useCORS: true,
+      });
+      bar.style.width = '85%';
+
+      const { jsPDF } = window.jspdf;
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'px', format: [PW, PH], hotfixes: ['px_scaling'] });
+      const pageH = PH * 2;
+      const totalH = canvas.height;
+      const totalPages = Math.ceil(totalH / pageH);
+      for (let i = 0; i < totalPages; i++) {
+        if (i > 0) pdf.addPage([PW, PH], 'portrait');
+        const slice = document.createElement('canvas');
+        slice.width = canvas.width;
+        slice.height = Math.min(pageH, totalH - i * pageH);
+        slice.getContext('2d').drawImage(canvas, 0, -i * pageH);
+        pdf.addImage(slice.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, PW, slice.height / 2);
+      }
+      bar.style.width = '100%';
+      downloadBlob(pdf.output('blob'), file.name.replace(/\.docx$/i, '.pdf'));
+    }
+
+    async function renderServer() {
+      const fd = new FormData();
+      fd.append('file', file);
+      const { blob } = await postForm('/api/word-to-pdf', fd, bar);
+      downloadBlob(blob, file.name.replace(/\.docx$/i, '.pdf'));
+    }
+  </script>
+</body>
+</html>

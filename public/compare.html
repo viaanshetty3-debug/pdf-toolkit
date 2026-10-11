@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Compare PDFs · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.js"></script>
+  <style>
+    .visual-page { display: flex; gap: 12px; margin-top: 20px; justify-content: center; flex-wrap: wrap; }
+    .visual-page .side { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+    .visual-page .side .lbl { text-align: center; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    .visual-page canvas { display: block; background: #fff; border-radius: 4px; max-width: 400px; height: auto; }
+    .mode-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+    .mode-tabs button { padding: 6px 14px; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; cursor: pointer; font-size: 13px; }
+    .mode-tabs button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .dz-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .dz-row .dropzone { padding: 32px 16px; }
+    .diff-page { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin-top: 12px; }
+    .diff-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .diff-head .pageno { font-weight: 600; }
+    .diff-body { font-family: ui-monospace, 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+    .diff-line.add { background: rgba(16,185,129,0.12); color: #d1fae5; padding: 1px 6px; border-left: 3px solid var(--ok); }
+    .diff-line.del { background: rgba(239,68,68,0.12); color: #fee2e2; padding: 1px 6px; border-left: 3px solid var(--danger); text-decoration: line-through; opacity: 0.85; }
+    .diff-line.eq { color: var(--muted); padding: 1px 6px; }
+    .diff-page.identical .diff-body { color: var(--muted); font-style: italic; font-family: inherit; }
+  </style>
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>Compare PDFs</h1>
+    <p class="subtitle">Side-by-side text diff. Pages are aligned by index, lines are matched using the longest common subsequence.</p>
+
+    <div class="dz-row">
+      <div class="dropzone" id="dropA">
+        <input type="file" />
+        <div class="big">A</div>
+        <div><strong>Drop original</strong></div>
+        <div class="hint" id="nameA"></div>
+      </div>
+      <div class="dropzone" id="dropB">
+        <input type="file" />
+        <div class="big">B</div>
+        <div><strong>Drop revised</strong></div>
+        <div class="hint" id="nameB"></div>
+      </div>
+    </div>
+
+    <div class="mode-tabs" style="margin-top: 16px;">
+      <button data-mode="text" class="active">Text diff</button>
+      <button data-mode="visual">Visual diff (pixel)</button>
+    </div>
+
+    <div class="row right">
+      <div class="progress hidden" id="progwrap" style="flex:1"><div class="bar" id="bar"></div></div>
+      <button class="btn" id="go" disabled>Compare</button>
+    </div>
+
+    <div id="result" class="hidden" style="margin-top: 20px;">
+      <h2>Summary</h2>
+      <div class="card">
+        <div class="stat-row"><span class="k">File A pages</span><span id="pagesA"></span></div>
+        <div class="stat-row"><span class="k">File B pages</span><span id="pagesB"></span></div>
+        <div class="stat-row"><span class="k">Pages changed</span><span id="pagesChanged"></span></div>
+        <div class="stat-row"><span class="k">Lines added</span><span id="added"></span></div>
+        <div class="stat-row"><span class="k">Lines removed</span><span id="removed"></span></div>
+      </div>
+      <h2 style="margin-top: 24px;">Per-page diff</h2>
+      <div id="pages"></div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { renderNav, makeDropzone, humanSize, toast } from '/common.js';
+    renderNav();
+
+    let fileA = null, fileB = null;
+    const dropA = document.getElementById('dropA');
+    const dropB = document.getElementById('dropB');
+    const goBtn = document.getElementById('go');
+    const bar = document.getElementById('bar'), progwrap = document.getElementById('progwrap');
+
+    makeDropzone(dropA, { multiple: false }).setOnFiles(a => {
+      if (a[0]) { fileA = a[0]; document.getElementById('nameA').textContent = `${a[0].name} · ${humanSize(a[0].size)}`; updateBtn(); }
+    });
+    makeDropzone(dropB, { multiple: false }).setOnFiles(a => {
+      if (a[0]) { fileB = a[0]; document.getElementById('nameB').textContent = `${a[0].name} · ${humanSize(a[0].size)}`; updateBtn(); }
+    });
+    function updateBtn() { goBtn.disabled = !(fileA && fileB); }
+
+    function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+    let mode = 'text';
+    document.querySelectorAll('.mode-tabs button').forEach(b => b.addEventListener('click', () => {
+      document.querySelectorAll('.mode-tabs button').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      mode = b.dataset.mode;
+    }));
+
+    goBtn.addEventListener('click', async () => {
+      if (!fileA || !fileB) return;
+      progwrap.classList.remove('hidden'); bar.style.width = '15%';
+      try {
+        if (mode === 'text') {
+          const fd = new FormData();
+          fd.append('fileA', fileA); fd.append('fileB', fileB);
+          const r = await fetch('/api/compare', { method: 'POST', body: fd });
+          bar.style.width = '90%';
+          if (!r.ok) throw new Error((await r.json()).error);
+          const data = await r.json();
+          bar.style.width = '100%';
+          render(data);
+        } else {
+          await renderVisual();
+        }
+        toast('Compared', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally { setTimeout(() => progwrap.classList.add('hidden'), 800); }
+    });
+
+    async function renderVisual() {
+      if (!window.pdfjsLib) throw new Error('pdf.js not loaded');
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.js';
+      const [pdfA, pdfB] = await Promise.all([
+        window.pdfjsLib.getDocument({ data: new Uint8Array(await fileA.arrayBuffer()) }).promise,
+        window.pdfjsLib.getDocument({ data: new Uint8Array(await fileB.arrayBuffer()) }).promise,
+      ]);
+      bar.style.width = '35%';
+      const maxPages = Math.max(pdfA.numPages, pdfB.numPages);
+      const resultEl = document.getElementById('result');
+      resultEl.classList.remove('hidden');
+      resultEl.innerHTML = `<h2>Visual Diff</h2><div id="pages"></div>`;
+      const pagesEl = document.getElementById('pages');
+      let changedPages = 0;
+
+      for (let i = 1; i <= maxPages; i++) {
+        bar.style.width = `${35 + (i / maxPages) * 60}%`;
+        const [imgA, imgB] = await Promise.all([
+          i <= pdfA.numPages ? renderPage(pdfA, i) : null,
+          i <= pdfB.numPages ? renderPage(pdfB, i) : null,
+        ]);
+        const diff = diffCanvases(imgA, imgB);
+        if (diff.changed) changedPages++;
+        const section = document.createElement('div');
+        section.className = 'diff-page';
+        section.innerHTML = `
+          <div class="diff-head">
+            <span class="pageno">Page ${i}</span>
+            ${diff.changed ? `<span class="pill" style="color:#fecaca;border-color:var(--danger)">${diff.pct.toFixed(2)}% different</span>` : '<span class="pill">identical</span>'}
+          </div>
+          <div class="visual-page">
+            <div class="side"><div class="lbl">A</div></div>
+            <div class="side"><div class="lbl">Diff (red = changed)</div></div>
+            <div class="side"><div class="lbl">B</div></div>
+          </div>
+        `;
+        const sides = section.querySelectorAll('.side');
+        if (imgA) sides[0].appendChild(imgA.canvas);
+        if (diff.canvas) sides[1].appendChild(diff.canvas);
+        if (imgB) sides[2].appendChild(imgB.canvas);
+        pagesEl.appendChild(section);
+      }
+
+      const summary = document.createElement('div');
+      summary.className = 'card';
+      summary.innerHTML = `
+        <div class="stat-row"><span class="k">Pages compared</span><span>${maxPages}</span></div>
+        <div class="stat-row"><span class="k">Pages changed</span><span>${changedPages}</span></div>
+      `;
+      pagesEl.insertBefore(summary, pagesEl.firstChild);
+    }
+
+    async function renderPage(pdf, num) {
+      const page = await pdf.getPage(num);
+      const viewport = page.getViewport({ scale: 1.3 });
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      return { canvas, width: viewport.width, height: viewport.height };
+    }
+
+    function diffCanvases(a, b) {
+      if (!a || !b) {
+        const only = a || b;
+        if (!only) return { changed: false, pct: 0, canvas: null };
+        return { changed: true, pct: 100, canvas: null };
+      }
+      const w = Math.max(a.width, b.width);
+      const h = Math.max(a.height, b.height);
+      const scratchA = document.createElement('canvas'); scratchA.width = w; scratchA.height = h;
+      const scratchB = document.createElement('canvas'); scratchB.width = w; scratchB.height = h;
+      scratchA.getContext('2d').drawImage(a.canvas, 0, 0);
+      scratchB.getContext('2d').drawImage(b.canvas, 0, 0);
+      const da = scratchA.getContext('2d').getImageData(0, 0, w, h);
+      const db = scratchB.getContext('2d').getImageData(0, 0, w, h);
+      const out = document.createElement('canvas'); out.width = w; out.height = h;
+      const ctx = out.getContext('2d');
+      const diffData = ctx.createImageData(w, h);
+      let changed = 0;
+      const THRESH = 24;
+      for (let i = 0; i < da.data.length; i += 4) {
+        const dr = Math.abs(da.data[i] - db.data[i]);
+        const dg = Math.abs(da.data[i + 1] - db.data[i + 1]);
+        const dblu = Math.abs(da.data[i + 2] - db.data[i + 2]);
+        const d = dr + dg + dblu;
+        if (d > THRESH) {
+          // Red overlay on top of a dimmed B.
+          diffData.data[i]     = 239;  // red
+          diffData.data[i + 1] = 68;
+          diffData.data[i + 2] = 68;
+          diffData.data[i + 3] = 220;
+          changed++;
+        } else {
+          // Pass through B at low opacity (grey ghost).
+          diffData.data[i]     = da.data[i] * 0.4 + 150;
+          diffData.data[i + 1] = da.data[i + 1] * 0.4 + 150;
+          diffData.data[i + 2] = da.data[i + 2] * 0.4 + 150;
+          diffData.data[i + 3] = 180;
+        }
+      }
+      ctx.putImageData(diffData, 0, 0);
+      const total = da.data.length / 4;
+      const pct = (changed / total) * 100;
+      return { changed: pct > 0.1, pct, canvas: out };
+    }
+
+    function render(data) {
+      document.getElementById('result').classList.remove('hidden');
+      document.getElementById('pagesA').textContent = data.summary.pagesA;
+      document.getElementById('pagesB').textContent = data.summary.pagesB;
+      document.getElementById('pagesChanged').textContent = data.summary.pagesChanged;
+      document.getElementById('added').textContent = data.summary.totalAdded;
+      document.getElementById('removed').textContent = data.summary.totalRemoved;
+
+      const pagesEl = document.getElementById('pages');
+      pagesEl.innerHTML = data.pages.map(p => {
+        const identical = !p.changed;
+        if (identical) {
+          return `<div class="diff-page identical">
+            <div class="diff-head"><span class="pageno">Page ${p.page + 1}</span><span class="pill">unchanged</span></div>
+            <div class="diff-body">— no textual changes —</div>
+          </div>`;
+        }
+        const body = p.diff.map(d => {
+          const cls = d.op === '+' ? 'add' : d.op === '-' ? 'del' : 'eq';
+          const prefix = d.op === '=' ? '  ' : d.op + ' ';
+          return `<div class="diff-line ${cls}">${escapeHtml(prefix + d.text)}</div>`;
+        }).join('');
+        return `<div class="diff-page">
+          <div class="diff-head">
+            <span class="pageno">Page ${p.page + 1}</span>
+            <span class="pill" style="border-color:var(--ok);color:#a7f3d0">+${p.added}</span>
+            <span class="pill" style="border-color:var(--danger);color:#fecaca">-${p.removed}</span>
+          </div>
+          <div class="diff-body">${body}</div>
+        </div>`;
+      }).join('');
+    }
+  </script>
+</body>
+</html>

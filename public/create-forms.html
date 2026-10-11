@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Create PDF Forms · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.js"></script>
+  <style>
+    .layout { display: grid; grid-template-columns: 180px 1fr 280px; gap: 16px; margin-top: 20px; }
+    .rail { display: flex; flex-direction: column; gap: 8px; max-height: 70vh; overflow-y: auto; }
+    .rail-tile { background: var(--panel-2); border: 2px solid var(--border); border-radius: 8px; padding: 6px; cursor: pointer; }
+    .rail-tile.active { border-color: var(--accent); }
+    .rail-tile canvas { width: 100%; display: block; background: #fff; border-radius: 4px; }
+    .rail-tile .label { text-align: center; font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .canvas-wrap { position: relative; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 16px; overflow: auto; }
+    .canvas-wrap canvas { display: block; background: #fff; box-shadow: 0 4px 20px rgba(0,0,0,.3); }
+    .overlay { position: absolute; inset: 16px; cursor: crosshair; }
+    .fld-box { position: absolute; border: 2px dashed var(--accent); background: color-mix(in oklab, var(--accent) 8%, transparent); cursor: move; display: flex; align-items: center; justify-content: center; }
+    .fld-box .lbl { font-size: 10px; color: var(--accent); padding: 2px 4px; background: var(--panel); border-radius: 4px; }
+    .fld-box .del { position: absolute; top: -10px; right: -10px; width: 20px; height: 20px; background: var(--danger); color: #fff; border: none; border-radius: 50%; cursor: pointer; font-size: 11px; }
+    .side { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+    .toolbar { display: flex; gap: 8px; margin-bottom: 10px; }
+    .toolbar .tool-btn { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+    .toolbar .tool-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  </style>
+</head>
+<body>
+  <header class="topnav"></header>
+  <main style="max-width: 1400px;">
+    <h1>Create PDF Forms</h1>
+    <p class="subtitle">Add fillable fields to any PDF. Pick a type, drag on the page to place it.</p>
+
+    <div class="dropzone" id="drop">
+      <input type="file" />
+      <div class="big">📝</div>
+      <div><strong>Drop a PDF</strong> or click to browse</div>
+    </div>
+
+    <div id="loaded" class="hidden">
+      <div class="row" style="margin-top: 16px;">
+        <strong id="loadedname"></strong>
+        <span class="pill" id="loadedpages"></span>
+        <span class="pill" id="fldcount">0 fields</span>
+        <div class="spacer"></div>
+        <button class="btn secondary" id="changefile">Change file</button>
+      </div>
+
+      <div class="toolbar">
+        <button class="tool-btn active" data-kind="text">Text</button>
+        <button class="tool-btn" data-kind="checkbox">Checkbox</button>
+        <button class="tool-btn" data-kind="radio">Radio</button>
+        <button class="tool-btn" data-kind="dropdown">Dropdown</button>
+      </div>
+
+      <div class="layout">
+        <div class="rail" id="rail"></div>
+        <div>
+          <div class="canvas-wrap">
+            <canvas id="pageCanvas"></canvas>
+            <div class="overlay" id="overlay"></div>
+          </div>
+        </div>
+        <div class="side">
+          <strong>Field properties</strong>
+          <div id="props" style="margin-top: 10px; color: var(--muted); font-size: 13px;">Select a field or draw one on the page to configure it.</div>
+        </div>
+      </div>
+
+      <div class="progress hidden" id="progwrap"><div class="bar" id="bar"></div></div>
+      <div class="row right" style="margin-top: 20px;">
+        <button class="btn" id="go">Save & Download</button>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { renderNav, makeDropzone, postForm, downloadBlob, humanSize, toast } from '/common.js';
+    import { openPdf, renderThumb } from '/pdf-thumbs.js';
+    renderNav();
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.js';
+
+    let file = null, pdf = null, currentPage = 0;
+    const scale = 1.5;
+    // fields: per-page array of { kind, x, y, w, h, name, options?, defaultValue?, checked?, selected? }
+    let fields = [];
+    let activeKind = 'text';
+    let selectedIdx = null;
+
+    const canvas = document.getElementById('pageCanvas');
+    const overlayEl = document.getElementById('overlay');
+    const rail = document.getElementById('rail');
+    const dropEl = document.getElementById('drop');
+    const loadedEl = document.getElementById('loaded');
+    const bar = document.getElementById('bar'), progwrap = document.getElementById('progwrap');
+    const propsEl = document.getElementById('props');
+    const fldCountEl = document.getElementById('fldcount');
+
+    document.querySelectorAll('.tool-btn[data-kind]').forEach(btn => btn.addEventListener('click', () => {
+      document.querySelectorAll('.tool-btn[data-kind]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeKind = btn.dataset.kind;
+    }));
+
+    const dz = makeDropzone(dropEl, { multiple: false });
+    dz.setOnFiles(async arr => {
+      if (!arr.length) return;
+      file = arr[0];
+      pdf = await openPdf(file);
+      fields = Array.from({ length: pdf.numPages }, () => []);
+      document.getElementById('loadedname').textContent = file.name;
+      document.getElementById('loadedpages').textContent = `${pdf.numPages} pages · ${humanSize(file.size)}`;
+      dropEl.classList.add('hidden'); loadedEl.classList.remove('hidden');
+      buildRail();
+      renderPage(0);
+    });
+
+    document.getElementById('changefile').addEventListener('click', () => {
+      file = null; pdf = null; fields = [];
+      dropEl.classList.remove('hidden'); loadedEl.classList.add('hidden');
+    });
+
+    function updateCount() {
+      const n = fields.reduce((s, p) => s + p.length, 0);
+      fldCountEl.textContent = `${n} field${n === 1 ? '' : 's'}`;
+    }
+
+    function buildRail() {
+      rail.innerHTML = '';
+      for (let i = 0; i < pdf.numPages; i++) {
+        const tile = document.createElement('div');
+        tile.className = 'rail-tile' + (i === currentPage ? ' active' : '');
+        tile.innerHTML = `<canvas></canvas><div class="label">${i + 1}</div>`;
+        tile.addEventListener('click', () => renderPage(i));
+        rail.appendChild(tile);
+        renderThumb(pdf, i + 1, tile.querySelector('canvas'), 0.25).catch(() => {});
+      }
+    }
+
+    async function renderPage(idx) {
+      currentPage = idx;
+      selectedIdx = null;
+      renderProps();
+      document.querySelectorAll('.rail-tile').forEach((t, i) => t.classList.toggle('active', i === idx));
+      const page = await pdf.getPage(idx + 1);
+      const viewport = page.getViewport({ scale });
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      overlayEl.style.width = `${viewport.width}px`;
+      overlayEl.style.height = `${viewport.height}px`;
+      renderOverlay();
+    }
+
+    function renderOverlay() {
+      overlayEl.innerHTML = '';
+      fields[currentPage].forEach((f, i) => {
+        const el = document.createElement('div');
+        el.className = 'fld-box';
+        el.style.left = `${f.x * scale}px`;
+        el.style.top = `${f.y * scale}px`;
+        el.style.width = `${f.w * scale}px`;
+        el.style.height = `${f.h * scale}px`;
+        el.innerHTML = `<span class="lbl">${f.kind}: ${f.name}</span><button class="del">×</button>`;
+        el.querySelector('.del').addEventListener('click', ev => {
+          ev.stopPropagation();
+          fields[currentPage].splice(i, 1);
+          if (selectedIdx === i) { selectedIdx = null; renderProps(); }
+          renderOverlay(); updateCount();
+        });
+        el.addEventListener('mousedown', ev => {
+          if (ev.target.classList.contains('del')) return;
+          selectedIdx = i; renderProps();
+          ev.stopPropagation();
+          const s = { x: ev.clientX, y: ev.clientY, ox: f.x, oy: f.y };
+          const onMove = e => {
+            f.x = s.ox + (e.clientX - s.x) / scale;
+            f.y = s.oy + (e.clientY - s.y) / scale;
+            el.style.left = `${f.x * scale}px`;
+            el.style.top = `${f.y * scale}px`;
+          };
+          const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+          window.addEventListener('mousemove', onMove);
+          window.addEventListener('mouseup', onUp);
+        });
+        overlayEl.appendChild(el);
+      });
+    }
+
+    overlayEl.addEventListener('mousedown', e => {
+      if (e.target !== overlayEl) return;
+      const r = overlayEl.getBoundingClientRect();
+      const start = { x: (e.clientX - r.left) / scale, y: (e.clientY - r.top) / scale };
+      const temp = document.createElement('div');
+      temp.className = 'fld-box';
+      overlayEl.appendChild(temp);
+      const onMove = ev => {
+        const cx = (ev.clientX - r.left) / scale, cy = (ev.clientY - r.top) / scale;
+        const x = Math.min(start.x, cx), y = Math.min(start.y, cy);
+        const w = Math.abs(cx - start.x), h = Math.abs(cy - start.y);
+        temp.style.left = `${x * scale}px`;
+        temp.style.top = `${y * scale}px`;
+        temp.style.width = `${w * scale}px`;
+        temp.style.height = `${h * scale}px`;
+        temp.dataset.x = x; temp.dataset.y = y; temp.dataset.w = w; temp.dataset.h = h;
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        const w = parseFloat(temp.dataset.w || 0), h = parseFloat(temp.dataset.h || 0);
+        if (w > 10 && h > 10) {
+          const defaultName = `${activeKind}_${fields[currentPage].length + 1}`;
+          const base = { kind: activeKind, x: parseFloat(temp.dataset.x), y: parseFloat(temp.dataset.y), w, h, name: defaultName };
+          if (activeKind === 'radio' || activeKind === 'dropdown') base.options = ['Option 1', 'Option 2'];
+          fields[currentPage].push(base);
+          selectedIdx = fields[currentPage].length - 1;
+          renderProps();
+        }
+        renderOverlay(); updateCount();
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    });
+
+    function renderProps() {
+      if (selectedIdx === null || !fields[currentPage][selectedIdx]) {
+        propsEl.innerHTML = 'Select a field or draw one on the page to configure it.';
+        return;
+      }
+      const f = fields[currentPage][selectedIdx];
+      let html = `
+        <label class="field">Name</label>
+        <input id="pn" type="text" value="${escapeHtml(f.name)}" />
+      `;
+      if (f.kind === 'text') {
+        html += `<label class="field">Default value</label><input id="pdv" type="text" value="${escapeHtml(f.defaultValue || '')}" />`;
+      } else if (f.kind === 'checkbox') {
+        html += `<label class="field" style="display:flex;align-items:center;gap:8px"><input id="pc" type="checkbox" ${f.checked ? 'checked' : ''}> Checked by default</label>`;
+      } else if (f.kind === 'radio' || f.kind === 'dropdown') {
+        html += `<label class="field">Options (one per line)</label><textarea id="po" rows="4" style="width:100%;background:var(--panel-2);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:10px;font:inherit">${(f.options || []).map(escapeHtml).join('\n')}</textarea>`;
+        html += `<label class="field">Default selected</label><input id="psel" type="text" value="${escapeHtml(f.selected || '')}" />`;
+      }
+      propsEl.innerHTML = html;
+      document.getElementById('pn').addEventListener('input', e => { f.name = e.target.value.replace(/[^\w.-]/g, '_'); renderOverlay(); });
+      if (f.kind === 'text') document.getElementById('pdv').addEventListener('input', e => { f.defaultValue = e.target.value; });
+      if (f.kind === 'checkbox') document.getElementById('pc').addEventListener('input', e => { f.checked = e.target.checked; });
+      if (f.kind === 'radio' || f.kind === 'dropdown') {
+        document.getElementById('po').addEventListener('input', e => { f.options = e.target.value.split('\n').map(s => s.trim()).filter(Boolean); });
+        document.getElementById('psel').addEventListener('input', e => { f.selected = e.target.value; });
+      }
+    }
+
+    function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+    document.getElementById('go').addEventListener('click', async () => {
+      if (!file) return;
+      const flat = [];
+      fields.forEach((pageFields, p) => pageFields.forEach(f => flat.push({ ...f, page: p })));
+      if (flat.length === 0) return toast('Add at least one field', 'err');
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('fields', JSON.stringify(flat));
+      progwrap.classList.remove('hidden'); bar.style.width = '0%';
+      try {
+        const { blob } = await postForm('/api/forms/create', fd, bar);
+        downloadBlob(blob, 'with-fields.pdf');
+        toast('Form fields added', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally { setTimeout(() => progwrap.classList.add('hidden'), 800); }
+    });
+  </script>
+</body>
+</html>

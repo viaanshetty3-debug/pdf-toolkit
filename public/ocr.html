@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OCR PDF · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>OCR PDF</h1>
+    <p class="subtitle">Make scanned PDFs searchable. Three engines; pick the right one for your document.</p>
+
+    <div class="dropzone" id="drop">
+      <input type="file" />
+      <div class="big">🔍</div>
+      <div><strong>Drop a PDF</strong> or click to browse</div>
+    </div>
+
+    <div id="loaded" class="hidden">
+      <div class="card" style="margin-top: 20px;">
+        <div class="row">
+          <strong id="loadedname"></strong>
+          <span class="pill" id="loadedpages"></span>
+          <div class="spacer"></div>
+          <button class="btn secondary" id="changefile">Change file</button>
+        </div>
+
+        <label class="field">Engine</label>
+        <select id="engine">
+          <option value="gemini">Gemini vision — best for handwriting + rare scripts (needs API key)</option>
+          <option value="tesseract-server" selected>Tesseract (server, native LSTM) — fast, high quality on printed text</option>
+          <option value="tesseract-browser">Tesseract (browser, WASM) — fully local, never uploads</option>
+        </select>
+
+        <div id="hint-wrap">
+          <label class="field">Content hint <span class="pill">helps the engine pick its best path</span></label>
+          <select id="hint">
+            <option value="">Auto (printed Latin or mixed)</option>
+            <option value="handwriting">Handwriting</option>
+            <option value="mixed_scripts">Mixed scripts (CJK + Latin, Devanagari, etc.)</option>
+            <option value="printed">Printed only</option>
+          </select>
+        </div>
+
+        <label class="field">Language</label>
+        <select id="lang">
+          <option value="eng" selected>English</option>
+          <option value="eng+fra">English + French</option>
+          <option value="eng+spa">English + Spanish</option>
+          <option value="eng+deu">English + German</option>
+          <option value="chi_sim">Chinese (simplified)</option>
+          <option value="chi_tra">Chinese (traditional)</option>
+          <option value="jpn">Japanese</option>
+          <option value="kor">Korean</option>
+          <option value="ara">Arabic</option>
+          <option value="hin">Hindi</option>
+          <option value="rus">Russian</option>
+          <option value="tha">Thai</option>
+          <option value="vie">Vietnamese</option>
+          <option value="fas">Persian</option>
+          <option value="heb">Hebrew</option>
+          <option value="ell">Greek</option>
+        </select>
+
+        <div class="progress hidden" id="progwrap"><div class="bar" id="bar"></div></div>
+        <div id="status" class="subtitle hidden" style="margin-top: 10px;"></div>
+
+        <div class="row right" style="margin-top: 20px;">
+          <button class="btn" id="go">Run OCR & Download</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { renderNav, makeDropzone, postForm, downloadBlob, humanSize, toast } from '/common.js';
+    import { openPdf } from '/pdf-thumbs.js';
+    renderNav();
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.js';
+
+    let file = null, pdf = null;
+    const dropEl = document.getElementById('drop'), loadedEl = document.getElementById('loaded');
+    const bar = document.getElementById('bar'), progwrap = document.getElementById('progwrap');
+    const statusEl = document.getElementById('status');
+    const engineEl = document.getElementById('engine');
+    const hintWrap = document.getElementById('hint-wrap');
+
+    // Hide "hint" selector unless Gemini is chosen.
+    const updateHint = () => hintWrap.style.display = engineEl.value === 'gemini' ? 'block' : 'none';
+    engineEl.addEventListener('change', updateHint);
+
+    // Query server for Gemini availability; if unavailable, disable Gemini option.
+    (async () => {
+      try {
+        const r = await fetch('/api/ocr-server/langs');
+        const s = await r.json();
+        if (!s.geminiAvailable) {
+          const opt = engineEl.querySelector('option[value="gemini"]');
+          opt.disabled = true;
+          opt.textContent = 'Gemini vision (requires GEMINI_API_KEY on server) — unavailable';
+          if (engineEl.value === 'gemini') engineEl.value = 'tesseract-server';
+        }
+      } catch {}
+      updateHint();
+    })();
+
+    const dz = makeDropzone(dropEl, { multiple: false });
+    dz.setOnFiles(async arr => {
+      if (!arr.length) return;
+      file = arr[0];
+      pdf = await openPdf(file);
+      document.getElementById('loadedname').textContent = file.name;
+      document.getElementById('loadedpages').textContent = `${pdf.numPages} pages · ${humanSize(file.size)}`;
+      dropEl.classList.add('hidden'); loadedEl.classList.remove('hidden');
+    });
+    document.getElementById('changefile').addEventListener('click', () => {
+      file = null; pdf = null;
+      dropEl.classList.remove('hidden'); loadedEl.classList.add('hidden');
+    });
+
+    document.getElementById('go').addEventListener('click', async () => {
+      if (!file) return;
+      const engine = engineEl.value;
+      const lang = document.getElementById('lang').value;
+      progwrap.classList.remove('hidden'); bar.style.width = '0%';
+      statusEl.classList.remove('hidden');
+      try {
+        if (engine === 'tesseract-browser') await runBrowserTess(lang);
+        else await runServer(engine === 'gemini' ? 'gemini' : 'tesseract', lang);
+        toast('Searchable PDF ready', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally { setTimeout(() => { progwrap.classList.add('hidden'); statusEl.classList.add('hidden'); }, 1000); }
+    });
+
+    async function runServer(engine, lang) {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('engine', engine);
+      fd.append('lang', lang);
+      const hint = document.getElementById('hint').value;
+      if (hint) fd.append('hint', hint);
+      statusEl.textContent = engine === 'gemini'
+        ? 'Rasterizing pages and running Gemini vision (handles handwriting + rare scripts)...'
+        : 'Running native Tesseract with LSTM "best" models...';
+      const { blob, headers } = await postForm('/api/ocr-server', fd, bar);
+      const words = headers.getResponseHeader('x-ocr-total-words');
+      const used = headers.getResponseHeader('x-ocr-engine');
+      statusEl.textContent = `Engine: ${used} · ${words} words recognized`;
+      downloadBlob(blob, 'ocr.pdf');
+    }
+
+    async function runBrowserTess(lang) {
+      statusEl.textContent = `Loading OCR engine (${lang})...`;
+      const worker = await Tesseract.createWorker(lang);
+      const layer = [];
+      for (let i = 1; i <= pdf.numPages; i++) {
+        statusEl.textContent = `OCR page ${i} of ${pdf.numPages}...`;
+        const page = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: 2 });
+        const canvas = document.createElement('canvas');
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+        const { data } = await worker.recognize(canvas, {}, { blocks: true });
+        const words = [];
+        for (const block of (data.blocks || [])) {
+          for (const para of (block.paragraphs || [])) {
+            for (const line of (para.lines || [])) {
+              for (const w of (line.words || [])) {
+                if (!w.text || !w.bbox) continue;
+                words.push({ text: w.text, x: w.bbox.x0, y: w.bbox.y0, w: w.bbox.x1 - w.bbox.x0, h: w.bbox.y1 - w.bbox.y0 });
+              }
+            }
+          }
+        }
+        layer.push({ page: i - 1, pageWidth: canvas.width, pageHeight: canvas.height, words });
+        bar.style.width = `${(i / pdf.numPages) * 80}%`;
+      }
+      await worker.terminate();
+      statusEl.textContent = 'Embedding text layer...';
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('layer', JSON.stringify(layer));
+      const { blob } = await postForm('/api/ocr', fd, bar);
+      downloadBlob(blob, 'ocr.pdf');
+    }
+  </script>
+</body>
+</html>

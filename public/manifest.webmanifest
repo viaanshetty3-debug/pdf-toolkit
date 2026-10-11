@@ -1,0 +1,70 @@
+{
+  "name": "PDF Toolkit",
+  "short_name": "PDF Toolkit",
+  "description": "33 premium PDF tools — unlimited, local, free.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#09090c",
+  "theme_color": "#a78bfa",
+  "icons": [
+    {
+      "src": "/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    { "name": "Merge PDF",      "url": "/merge.html" },
+    { "name": "Compress PDF",   "url": "/compress.html" },
+    { "name": "AI Summarize",   "url": "/summarize.html" },
+    { "name": "Scan to PDF",    "url": "/scan.html" }
+  ],
+  "share_target": {
+    "action": "/share-target.html",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [
+        {
+          "name": "files",
+          "accept": [
+            "application/pdf",
+            "image/png",
+            "image/jpeg",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+          ]
+        }
+      ]
+    }
+  },
+  "file_handlers": [
+    {
+      "action": "/open-handler.html",
+      "accept": {
+        "application/pdf": [".pdf"]
+      },
+      "icons": [{ "src": "/icon-192.svg", "sizes": "192x192", "type": "image/svg+xml" }],
+      "launch_type": "single-client"
+    }
+  ],
+  "protocol_handlers": [
+    { "protocol": "web+pdftk", "url": "/?tool=%s" }
+  ],
+  "launch_handler": { "client_mode": "navigate-existing" },
+  "edge_side_panel": { "preferred_width": 480 },
+  "categories": ["productivity", "utilities"]
+}

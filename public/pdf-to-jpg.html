@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PDF to JPG · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>PDF to JPG</h1>
+    <p class="subtitle">Rendered in your browser — files never leave your device.</p>
+
+    <div class="dropzone" id="drop">
+      <input type="file" />
+      <div class="big">📷</div>
+      <div><strong>Drop a PDF</strong> or click to browse</div>
+    </div>
+
+    <div id="loaded" class="hidden">
+      <div class="card" style="margin-top: 20px;">
+        <div class="row">
+          <strong id="loadedname"></strong>
+          <span class="pill" id="loadedpages"></span>
+          <div class="spacer"></div>
+          <button class="btn secondary" id="changefile">Change file</button>
+        </div>
+
+        <label class="field">Scale</label>
+        <select id="scale">
+          <option value="1">1x (72 dpi)</option>
+          <option value="2" selected>2x (144 dpi)</option>
+          <option value="3">3x (216 dpi)</option>
+          <option value="4">4x (288 dpi)</option>
+        </select>
+
+        <label class="field">JPEG quality</label>
+        <select id="quality">
+          <option value="0.95" selected>Max (95%)</option>
+          <option value="0.85">High (85%)</option>
+          <option value="0.70">Medium (70%)</option>
+        </select>
+
+        <div class="progress hidden" id="progwrap"><div class="bar" id="bar"></div></div>
+        <div id="status" class="subtitle hidden" style="margin-top: 10px;"></div>
+
+        <div class="row right" style="margin-top: 20px;">
+          <button class="btn" id="go">Render & Download ZIP</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { renderNav, makeDropzone, downloadBlob, humanSize, toast } from '/common.js';
+    import { openPdf } from '/pdf-thumbs.js';
+    renderNav();
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.js';
+
+    let file = null, pdf = null;
+    const dropEl = document.getElementById('drop'), loadedEl = document.getElementById('loaded');
+    const bar = document.getElementById('bar'), progwrap = document.getElementById('progwrap');
+    const statusEl = document.getElementById('status');
+
+    const dz = makeDropzone(dropEl, { multiple: false });
+    dz.setOnFiles(async arr => {
+      if (!arr.length) return;
+      file = arr[0];
+      pdf = await openPdf(file);
+      document.getElementById('loadedname').textContent = file.name;
+      document.getElementById('loadedpages').textContent = `${pdf.numPages} pages · ${humanSize(file.size)}`;
+      dropEl.classList.add('hidden'); loadedEl.classList.remove('hidden');
+    });
+    document.getElementById('changefile').addEventListener('click', () => {
+      file = null; pdf = null;
+      dropEl.classList.remove('hidden'); loadedEl.classList.add('hidden');
+    });
+
+    document.getElementById('go').addEventListener('click', async () => {
+      if (!pdf) return;
+      const scale = parseFloat(document.getElementById('scale').value);
+      const quality = parseFloat(document.getElementById('quality').value);
+      const zip = new JSZip();
+      progwrap.classList.remove('hidden'); bar.style.width = '0%';
+      statusEl.classList.remove('hidden');
+      try {
+        for (let i = 1; i <= pdf.numPages; i++) {
+          statusEl.textContent = `Rendering page ${i} of ${pdf.numPages}…`;
+          const page = await pdf.getPage(i);
+          const viewport = page.getViewport({ scale });
+          const canvas = document.createElement('canvas');
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+          const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', quality));
+          const padN = String(i).padStart(String(pdf.numPages).length, '0');
+          zip.file(`page_${padN}.jpg`, blob);
+          bar.style.width = `${(i / pdf.numPages) * 90}%`;
+        }
+        statusEl.textContent = 'Packaging ZIP…';
+        const zipBlob = await zip.generateAsync({ type: 'blob' });
+        bar.style.width = '100%';
+        downloadBlob(zipBlob, 'pages.zip');
+        toast('Done', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally {
+        setTimeout(() => { progwrap.classList.add('hidden'); statusEl.classList.add('hidden'); }, 1000);
+      }
+    });
+  </script>
+</body>
+</html>

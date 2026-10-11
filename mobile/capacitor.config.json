@@ -1,0 +1,13 @@
+{
+  "appId": "com.pdftoolkit.app",
+  "appName": "PDF Toolkit",
+  "webDir": "www",
+  "bundledWebRuntime": false,
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true
+  },
+  "ios": {
+    "contentInset": "automatic"
+  }
+}

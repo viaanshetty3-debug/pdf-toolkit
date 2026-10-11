@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Rotate PDF · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>Rotate PDF</h1>
+    <p class="subtitle">Rotate all pages, or a range, by 90°, 180°, or 270°.</p>
+
+    <div class="dropzone" id="drop">
+      <input type="file" />
+      <div class="big">↻</div>
+      <div><strong>Drop a PDF</strong> or click to browse</div>
+    </div>
+
+    <div id="loaded" class="hidden">
+      <div class="card" style="margin-top: 20px;">
+        <div class="row">
+          <strong id="loadedname"></strong>
+          <span class="pill" id="loadedpages"></span>
+          <div class="spacer"></div>
+          <button class="btn secondary" id="changefile">Change file</button>
+        </div>
+
+        <label class="field">Angle (clockwise)</label>
+        <select id="angle">
+          <option value="90">90°</option>
+          <option value="180">180°</option>
+          <option value="270">270°</option>
+        </select>
+
+        <label class="field">Which pages</label>
+        <input type="text" id="pages" value="all" placeholder="all or 1-3,5" />
+
+        <div class="progress hidden" id="progwrap"><div class="bar" id="bar"></div></div>
+
+        <div class="row right" style="margin-top: 20px;">
+          <button class="btn" id="go">Rotate & Download</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { renderNav, makeDropzone, postForm, downloadBlob, humanSize, toast } from '/common.js';
+    renderNav();
+    let file = null;
+    const dropEl = document.getElementById('drop');
+    const loadedEl = document.getElementById('loaded');
+    const bar = document.getElementById('bar');
+    const progwrap = document.getElementById('progwrap');
+
+    const dz = makeDropzone(dropEl, { multiple: false });
+    dz.setOnFiles(async arr => {
+      if (!arr.length) return;
+      file = arr[0];
+      const fd = new FormData(); fd.append('file', file);
+      try {
+        const r = await fetch('/api/inspect', { method: 'POST', body: fd });
+        if (!r.ok) throw new Error((await r.json()).error);
+        const meta = await r.json();
+        document.getElementById('loadedname').textContent = file.name;
+        document.getElementById('loadedpages').textContent = `${meta.pageCount} pages · ${humanSize(file.size)}`;
+        dropEl.classList.add('hidden'); loadedEl.classList.remove('hidden');
+      } catch (e) { toast(e.message, 'err'); }
+    });
+
+    document.getElementById('changefile').addEventListener('click', () => {
+      file = null; dropEl.classList.remove('hidden'); loadedEl.classList.add('hidden');
+    });
+
+    document.getElementById('go').addEventListener('click', async () => {
+      if (!file) return;
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('angle', document.getElementById('angle').value);
+      fd.append('pages', document.getElementById('pages').value || 'all');
+      progwrap.classList.remove('hidden'); bar.style.width = '0%';
+      try {
+        const { blob } = await postForm('/api/rotate', fd, bar);
+        downloadBlob(blob, 'rotated.pdf');
+        toast('Rotated', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally { setTimeout(() => progwrap.classList.add('hidden'), 800); }
+    });
+  </script>
+</body>
+</html>

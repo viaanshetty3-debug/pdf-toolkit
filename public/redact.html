@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Redact PDF · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.js"></script>
+  <style>
+    .layout { display: grid; grid-template-columns: 180px 1fr; gap: 16px; margin-top: 20px; }
+    .rail { display: flex; flex-direction: column; gap: 8px; max-height: 70vh; overflow-y: auto; }
+    .rail-tile { background: var(--panel-2); border: 2px solid var(--border); border-radius: 8px; padding: 6px; cursor: pointer; position: relative; }
+    .rail-tile.active { border-color: var(--accent); }
+    .rail-tile canvas { width: 100%; display: block; background: #fff; border-radius: 4px; }
+    .rail-tile .label { text-align: center; font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .rail-tile .count { position: absolute; top: 2px; right: 2px; background: var(--danger); color: #fff; font-size: 10px; padding: 1px 6px; border-radius: 999px; }
+    .canvas-wrap { position: relative; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 16px; overflow: auto; }
+    .canvas-wrap canvas { display: block; background: #fff; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+    .overlay { position: absolute; inset: 16px; cursor: crosshair; }
+    .box { position: absolute; background: rgba(0,0,0,0.9); border: 1px solid var(--danger); cursor: move; }
+    .box .del { position: absolute; top: -10px; right: -10px; background: var(--danger); color: #fff; border: none; border-radius: 50%; width: 20px; height: 20px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <header class="topnav"></header>
+  <main style="max-width: 1400px;">
+    <h1>Redact PDF</h1>
+    <p class="subtitle">Draw rectangles over sensitive regions. <strong>Visual redaction only</strong> — the underlying text is not removed from the file. For true redaction of highly sensitive text, additionally rasterize affected pages (not yet available here).</p>
+
+    <div class="dropzone" id="drop">
+      <input type="file" />
+      <div class="big">▓</div>
+      <div><strong>Drop a PDF</strong> or click to browse</div>
+    </div>
+
+    <div id="loaded" class="hidden">
+      <div class="row" style="margin-top: 16px;">
+        <strong id="loadedname"></strong>
+        <span class="pill" id="loadedpages"></span>
+        <span class="pill" id="totalboxes">0 regions</span>
+        <div class="spacer"></div>
+        <button class="btn secondary" id="changefile">Change file</button>
+      </div>
+
+      <div class="layout">
+        <div class="rail" id="rail"></div>
+        <div>
+          <div class="canvas-wrap" id="canvasWrap">
+            <canvas id="pageCanvas"></canvas>
+            <div class="overlay" id="overlay"></div>
+          </div>
+          <div class="row right" style="margin-top: 20px;">
+            <div class="progress hidden" id="progwrap" style="flex:1"><div class="bar" id="bar"></div></div>
+            <button class="btn" id="go">Redact & Download</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { renderNav, makeDropzone, postForm, downloadBlob, humanSize, toast } from '/common.js';
+    import { openPdf, renderThumb } from '/pdf-thumbs.js';
+    renderNav();
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.js';
+
+    let file = null, pdf = null, currentPage = 0;
+    const scale = 1.5;
+    // boxes per page: { x, y, w, h }
+    let boxes = [];
+
+    const canvas = document.getElementById('pageCanvas');
+    const overlayEl = document.getElementById('overlay');
+    const rail = document.getElementById('rail');
+    const dropEl = document.getElementById('drop');
+    const loadedEl = document.getElementById('loaded');
+    const bar = document.getElementById('bar'), progwrap = document.getElementById('progwrap');
+
+    const dz = makeDropzone(dropEl, { multiple: false });
+    dz.setOnFiles(async arr => {
+      if (!arr.length) return;
+      file = arr[0];
+      pdf = await openPdf(file);
+      boxes = Array.from({ length: pdf.numPages }, () => []);
+      document.getElementById('loadedname').textContent = file.name;
+      document.getElementById('loadedpages').textContent = `${pdf.numPages} pages · ${humanSize(file.size)}`;
+      dropEl.classList.add('hidden'); loadedEl.classList.remove('hidden');
+      buildRail();
+      renderPage(0);
+    });
+
+    document.getElementById('changefile').addEventListener('click', () => {
+      file = null; pdf = null; boxes = [];
+      dropEl.classList.remove('hidden'); loadedEl.classList.add('hidden');
+    });
+
+    function updateCounts() {
+      const total = boxes.reduce((s, p) => s + p.length, 0);
+      document.getElementById('totalboxes').textContent = `${total} region${total === 1 ? '' : 's'}`;
+      document.querySelectorAll('.rail-tile').forEach((t, i) => {
+        const n = boxes[i].length;
+        let badge = t.querySelector('.count');
+        if (n > 0) {
+          if (!badge) { badge = document.createElement('div'); badge.className = 'count'; t.appendChild(badge); }
+          badge.textContent = n;
+        } else if (badge) badge.remove();
+      });
+    }
+
+    function buildRail() {
+      rail.innerHTML = '';
+      for (let i = 0; i < pdf.numPages; i++) {
+        const tile = document.createElement('div');
+        tile.className = 'rail-tile' + (i === currentPage ? ' active' : '');
+        tile.innerHTML = `<canvas></canvas><div class="label">${i + 1}</div>`;
+        tile.addEventListener('click', () => renderPage(i));
+        rail.appendChild(tile);
+        renderThumb(pdf, i + 1, tile.querySelector('canvas'), 0.25).catch(() => {});
+      }
+      updateCounts();
+    }
+
+    async function renderPage(idx) {
+      currentPage = idx;
+      document.querySelectorAll('.rail-tile').forEach((t, i) => t.classList.toggle('active', i === idx));
+      const page = await pdf.getPage(idx + 1);
+      const viewport = page.getViewport({ scale });
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      overlayEl.style.width = `${viewport.width}px`;
+      overlayEl.style.height = `${viewport.height}px`;
+      renderOverlay();
+    }
+
+    function renderOverlay() {
+      overlayEl.innerHTML = '';
+      boxes[currentPage].forEach((b, i) => {
+        const el = document.createElement('div');
+        el.className = 'box';
+        el.style.left = `${b.x * scale}px`;
+        el.style.top = `${b.y * scale}px`;
+        el.style.width = `${b.w * scale}px`;
+        el.style.height = `${b.h * scale}px`;
+        const del = document.createElement('button');
+        del.className = 'del'; del.textContent = '×';
+        del.addEventListener('click', ev => { ev.stopPropagation(); boxes[currentPage].splice(i, 1); renderOverlay(); updateCounts(); });
+        el.appendChild(del);
+        el.addEventListener('mousedown', ev => {
+          if (ev.target === del) return;
+          ev.stopPropagation();
+          const s = { x: ev.clientX, y: ev.clientY, ox: b.x, oy: b.y };
+          const onMove = e => {
+            b.x = s.ox + (e.clientX - s.x) / scale;
+            b.y = s.oy + (e.clientY - s.y) / scale;
+            el.style.left = `${b.x * scale}px`;
+            el.style.top = `${b.y * scale}px`;
+          };
+          const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+          window.addEventListener('mousemove', onMove);
+          window.addEventListener('mouseup', onUp);
+        });
+        overlayEl.appendChild(el);
+      });
+    }
+
+    overlayEl.addEventListener('mousedown', e => {
+      if (e.target !== overlayEl) return;
+      const r = overlayEl.getBoundingClientRect();
+      const start = { x: (e.clientX - r.left) / scale, y: (e.clientY - r.top) / scale };
+      const temp = document.createElement('div');
+      temp.className = 'box';
+      overlayEl.appendChild(temp);
+      const onMove = ev => {
+        const cx = (ev.clientX - r.left) / scale, cy = (ev.clientY - r.top) / scale;
+        const x = Math.min(start.x, cx), y = Math.min(start.y, cy);
+        const w = Math.abs(cx - start.x), h = Math.abs(cy - start.y);
+        temp.style.left = `${x * scale}px`;
+        temp.style.top = `${y * scale}px`;
+        temp.style.width = `${w * scale}px`;
+        temp.style.height = `${h * scale}px`;
+        temp.dataset.x = x; temp.dataset.y = y; temp.dataset.w = w; temp.dataset.h = h;
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        const w = parseFloat(temp.dataset.w || 0), h = parseFloat(temp.dataset.h || 0);
+        if (w > 4 && h > 4) {
+          boxes[currentPage].push({ x: parseFloat(temp.dataset.x), y: parseFloat(temp.dataset.y), w, h });
+        }
+        renderOverlay(); updateCounts();
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    });
+
+    document.getElementById('go').addEventListener('click', async () => {
+      if (!file) return;
+      const flat = [];
+      boxes.forEach((pageBoxes, p) => {
+        pageBoxes.forEach(b => flat.push({ page: p, x: b.x, y: b.y, w: b.w, h: b.h }));
+      });
+      if (flat.length === 0) return toast('Draw at least one region', 'err');
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('boxes', JSON.stringify(flat));
+      progwrap.classList.remove('hidden'); bar.style.width = '0%';
+      try {
+        const { blob } = await postForm('/api/redact', fd, bar);
+        downloadBlob(blob, 'redacted.pdf');
+        toast('Redacted', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally { setTimeout(() => progwrap.classList.add('hidden'), 800); }
+    });
+  </script>
+</body>
+</html>

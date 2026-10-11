@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PowerPoint to PDF · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>PowerPoint to PDF</h1>
+    <p class="subtitle">Each slide becomes a PDF page with its text. Images and complex layouts are not reproduced.</p>
+    <div id="tool"></div>
+  </main>
+  <script type="module">
+    import { mountSingleFileTool } from '/_single-file.js';
+    mountSingleFileTool({
+      endpoint: '/api/ppt-to-pdf',
+      outName: 'slides.pdf',
+      accept: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      acceptLabel: 'PowerPoint (.pptx) file',
+      icon: 'P',
+    });
+  </script>
+</body>
+</html>

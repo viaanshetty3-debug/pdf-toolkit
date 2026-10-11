@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Share · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>Choose a tool</h1>
+    <p class="subtitle" id="intro">Pick what to do with the shared file.</p>
+    <div class="grid" id="tools"></div>
+  </main>
+  <script type="module">
+    import { TOOLS, renderNav, icon, toast } from '/common.js';
+    renderNav();
+
+    // The service worker caches the POSTed file and redirects here. We fetch
+    // it back via sessionStorage, then let the user pick which tool to open.
+    const stored = sessionStorage.getItem('pdftk-share-file');
+    let file = null;
+    if (stored) {
+      try {
+        const data = JSON.parse(stored);
+        const bytes = Uint8Array.from(atob(data.base64), c => c.charCodeAt(0));
+        file = new File([bytes], data.name, { type: data.type });
+      } catch {}
+    }
+
+    const intro = document.getElementById('intro');
+    if (!file) {
+      intro.textContent = 'No shared file received. Open the app, choose a tool, and upload a file manually.';
+    } else {
+      intro.textContent = `Received "${file.name}" (${Math.round(file.size / 1024)} KB). Choose a tool:`;
+    }
+
+    // Only show tools that can accept the file's mime.
+    const type = file?.type || '';
+    const relevant = TOOLS.filter(t => {
+      // Everything can take a PDF; special-case images and office docs.
+      if (type === 'application/pdf') return !['viewer','workflow','batch'].includes(t.slug) ? true : true;
+      if (type.startsWith('image/')) return ['jpg-to-pdf','scan'].includes(t.slug);
+      if (type.includes('wordprocessingml')) return t.slug === 'word-to-pdf';
+      if (type.includes('spreadsheetml')) return t.slug === 'excel-to-pdf';
+      if (type.includes('presentationml')) return t.slug === 'ppt-to-pdf';
+      return true;
+    });
+
+    document.getElementById('tools').innerHTML = relevant.map(t => `
+      <a class="tool-card" href="/${t.slug}.html" data-slug="${t.slug}">
+        <div class="icon" style="--cat: var(--cat-organize)">${icon(t.icon, 20)}</div>
+        <div class="name">${t.name}</div>
+        <div class="desc">${t.desc}</div>
+      </a>
+    `).join('');
+
+    // When a tool is clicked, pass the file via sessionStorage so the tool
+    // page can pick it up on load.
+    document.querySelectorAll('[data-slug]').forEach(el => {
+      el.addEventListener('click', e => {
+        if (!file) return;
+        // The tool pages don't currently auto-load from sessionStorage;
+        // we toast so the user knows to drop the file manually. (A deeper
+        // integration would require tool-page edits.)
+        toast('Opening ' + el.querySelector('.name').textContent + ' — drop the file into the tool once it loads.', 'ok');
+      });
+    });
+  </script>
+</body>
+</html>

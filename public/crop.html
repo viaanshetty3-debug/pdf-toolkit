@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Crop PDF · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.js"></script>
+  <style>
+    .crop-wrap { position: relative; margin: 20px auto; max-width: 760px; }
+    .crop-wrap canvas { display: block; width: 100%; height: auto; background: #fff; box-shadow: 0 10px 30px rgba(0,0,0,.3); }
+    .crop-rect {
+      position: absolute;
+      border: 2px solid var(--accent);
+      background: color-mix(in oklab, var(--accent) 8%, transparent);
+      box-shadow: 0 0 0 9999px rgba(0,0,0,.4);
+    }
+    .handle {
+      position: absolute;
+      width: 12px; height: 12px;
+      background: var(--accent);
+      border: 2px solid #fff;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+    .handle.tl { top: -6px; left: -6px; cursor: nwse-resize; }
+    .handle.tr { top: -6px; right: -6px; cursor: nesw-resize; }
+    .handle.bl { bottom: -6px; left: -6px; cursor: nesw-resize; }
+    .handle.br { bottom: -6px; right: -6px; cursor: nwse-resize; }
+    .handle.t  { top: -6px; left: 50%; transform: translateX(-50%); cursor: ns-resize; }
+    .handle.b  { bottom: -6px; left: 50%; transform: translateX(-50%); cursor: ns-resize; }
+    .handle.l  { top: 50%; left: -6px; transform: translateY(-50%); cursor: ew-resize; }
+    .handle.r  { top: 50%; right: -6px; transform: translateY(-50%); cursor: ew-resize; }
+  </style>
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>Crop PDF</h1>
+    <p class="subtitle">Drag the handles to set the crop. Applies to every page uniformly.</p>
+
+    <div class="dropzone" id="drop">
+      <input type="file" accept="application/pdf" />
+      <div class="big">⬒</div>
+      <div><strong>Drop a PDF</strong> or click to browse</div>
+    </div>
+
+    <div id="loaded" class="hidden">
+      <div class="row" style="margin-top: 16px;">
+        <strong id="loadedname"></strong>
+        <span class="pill" id="loadedsize"></span>
+        <span class="pill" id="pageSize"></span>
+        <div class="spacer"></div>
+        <button class="btn secondary" id="changefile">Change file</button>
+      </div>
+
+      <div class="crop-wrap" id="cropWrap">
+        <canvas id="pageCanvas"></canvas>
+        <div class="crop-rect" id="rect">
+          <span class="handle tl"></span>
+          <span class="handle tr"></span>
+          <span class="handle bl"></span>
+          <span class="handle br"></span>
+          <span class="handle t"></span>
+          <span class="handle b"></span>
+          <span class="handle l"></span>
+          <span class="handle r"></span>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top: 10px;">
+        <div class="row">
+          <div style="flex:1 1 140px"><label class="field">Top (pt)</label><input id="top" type="text" readonly /></div>
+          <div style="flex:1 1 140px"><label class="field">Right (pt)</label><input id="right" type="text" readonly /></div>
+          <div style="flex:1 1 140px"><label class="field">Bottom (pt)</label><input id="bottom" type="text" readonly /></div>
+          <div style="flex:1 1 140px"><label class="field">Left (pt)</label><input id="left" type="text" readonly /></div>
+        </div>
+      </div>
+
+      <div class="progress hidden" id="progwrap"><div class="bar" id="bar"></div></div>
+      <div class="row right" style="margin-top: 20px;">
+        <button class="btn secondary" id="reset">Reset crop</button>
+        <button class="btn" id="go">Crop & Download</button>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { renderNav, makeDropzone, postForm, downloadBlob, humanSize, toast } from '/common.js';
+    import { openPdf } from '/pdf-thumbs.js';
+    renderNav();
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.js';
+
+    let file = null, pdf = null, pageW = 0, pageH = 0, canvasRect = null;
+    // Crop in pt (bottom-left origin on PDF, we display with top-left on canvas).
+    // Represented here in top-left canvas coords as rectangle {x,y,w,h} in pt.
+    let crop = null;
+
+    const dropEl = document.getElementById('drop'), loadedEl = document.getElementById('loaded');
+    const canvas = document.getElementById('pageCanvas');
+    const wrap = document.getElementById('cropWrap');
+    const rectEl = document.getElementById('rect');
+    const bar = document.getElementById('bar'), progwrap = document.getElementById('progwrap');
+
+    const dz = makeDropzone(dropEl, { multiple: false });
+    dz.setOnFiles(async arr => {
+      if (!arr.length) return;
+      file = arr[0];
+      pdf = await openPdf(file);
+      document.getElementById('loadedname').textContent = file.name;
+      document.getElementById('loadedsize').textContent = humanSize(file.size);
+      dropEl.classList.add('hidden'); loadedEl.classList.remove('hidden');
+      await renderPreview();
+    });
+    document.getElementById('changefile').addEventListener('click', () => {
+      file = null; pdf = null;
+      dropEl.classList.remove('hidden'); loadedEl.classList.add('hidden');
+    });
+
+    async function renderPreview() {
+      const page = await pdf.getPage(1);
+      const viewport = page.getViewport({ scale: 1 });
+      pageW = viewport.width; pageH = viewport.height;
+      document.getElementById('pageSize').textContent = `${Math.round(pageW)} × ${Math.round(pageH)} pt`;
+      // Fit canvas to CSS width (handled by CSS); render at native pt for simplicity.
+      canvas.width = pageW; canvas.height = pageH;
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      // Default crop: 10% margin.
+      crop = { x: pageW * 0.1, y: pageH * 0.1, w: pageW * 0.8, h: pageH * 0.8 };
+      renderRect();
+    }
+
+    function pctRect() {
+      // Convert pt crop to percentages of pageW/pageH for CSS positioning.
+      return {
+        left: `${(crop.x / pageW) * 100}%`,
+        top: `${(crop.y / pageH) * 100}%`,
+        width: `${(crop.w / pageW) * 100}%`,
+        height: `${(crop.h / pageH) * 100}%`,
+      };
+    }
+    function renderRect() {
+      const r = pctRect();
+      rectEl.style.left = r.left; rectEl.style.top = r.top;
+      rectEl.style.width = r.width; rectEl.style.height = r.height;
+      // Fill margin outputs.
+      document.getElementById('top').value = crop.y.toFixed(1);
+      document.getElementById('right').value = (pageW - crop.x - crop.w).toFixed(1);
+      document.getElementById('bottom').value = (pageH - crop.y - crop.h).toFixed(1);
+      document.getElementById('left').value = crop.x.toFixed(1);
+    }
+
+    document.getElementById('reset').addEventListener('click', () => {
+      crop = { x: 0, y: 0, w: pageW, h: pageH };
+      renderRect();
+    });
+
+    // Drag the body of the rect.
+    rectEl.addEventListener('mousedown', e => {
+      if (e.target.classList.contains('handle')) return;
+      e.preventDefault();
+      const start = { x: e.clientX, y: e.clientY, ox: crop.x, oy: crop.y };
+      const r = canvas.getBoundingClientRect();
+      const sx = pageW / r.width, sy = pageH / r.height;
+      const onMove = ev => {
+        crop.x = Math.max(0, Math.min(pageW - crop.w, start.ox + (ev.clientX - start.x) * sx));
+        crop.y = Math.max(0, Math.min(pageH - crop.h, start.oy + (ev.clientY - start.y) * sy));
+        renderRect();
+      };
+      const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    });
+
+    // Resize via handles.
+    rectEl.querySelectorAll('.handle').forEach(h => {
+      h.addEventListener('mousedown', e => {
+        e.stopPropagation(); e.preventDefault();
+        const dir = Array.from(h.classList).find(c => c !== 'handle');
+        const start = { x: e.clientX, y: e.clientY, c: { ...crop } };
+        const r = canvas.getBoundingClientRect();
+        const sx = pageW / r.width, sy = pageH / r.height;
+        const onMove = ev => {
+          const dx = (ev.clientX - start.x) * sx;
+          const dy = (ev.clientY - start.y) * sy;
+          const c = { ...start.c };
+          if (dir.includes('l')) { c.x = start.c.x + dx; c.w = start.c.w - dx; }
+          if (dir.includes('r')) { c.w = start.c.w + dx; }
+          if (dir.includes('t')) { c.y = start.c.y + dy; c.h = start.c.h - dy; }
+          if (dir.includes('b')) { c.h = start.c.h + dy; }
+          if (c.w < 20 || c.h < 20) return;
+          c.x = Math.max(0, c.x); c.y = Math.max(0, c.y);
+          c.w = Math.min(pageW - c.x, c.w); c.h = Math.min(pageH - c.y, c.h);
+          crop = c; renderRect();
+        };
+        const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+      });
+    });
+
+    document.getElementById('go').addEventListener('click', async () => {
+      if (!file) return;
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('top', crop.y);
+      fd.append('right', pageW - crop.x - crop.w);
+      fd.append('bottom', pageH - crop.y - crop.h);
+      fd.append('left', crop.x);
+      progwrap.classList.remove('hidden'); bar.style.width = '0%';
+      try {
+        const { blob } = await postForm('/api/crop', fd, bar);
+        downloadBlob(blob, 'cropped.pdf');
+        toast('Cropped', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally { setTimeout(() => progwrap.classList.add('hidden'), 800); }
+    });
+  </script>
+</body>
+</html>

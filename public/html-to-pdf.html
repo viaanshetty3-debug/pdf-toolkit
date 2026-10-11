@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HTML to PDF · PDF Toolkit</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+</head>
+<body>
+  <header class="topnav"></header>
+  <main>
+    <h1>HTML to PDF</h1>
+    <p class="subtitle">Full CSS support — your browser renders the HTML, we snapshot it to PDF. No layout engine substitutes.</p>
+
+    <div class="card">
+      <label class="field">HTML source</label>
+      <textarea id="html" rows="10" placeholder="<style>body { font-family: Georgia; } h1 { color: #a78bfa; }</style>&#10;<h1>My Document</h1>&#10;<p>Lorem ipsum...</p>" style="width:100%;background:var(--panel-2);border:1px solid var(--border);color:var(--text);padding:12px;border-radius:10px;font-family:ui-monospace,monospace;font-size:13px;"></textarea>
+      <div class="row" style="margin-top: 10px;">
+        <span class="pill">or</span>
+        <label class="btn secondary" style="cursor:pointer;margin:0">
+          Upload .html
+          <input type="file" id="file" accept="text/html" style="display:none" />
+        </label>
+        <span id="filename" class="pill hidden"></span>
+        <div class="spacer"></div>
+      </div>
+
+      <label class="field">Page size</label>
+      <select id="pageSize">
+        <option value="a4" selected>A4</option>
+        <option value="letter">US Letter</option>
+        <option value="legal">US Legal</option>
+      </select>
+      <label class="field">Orientation</label>
+      <select id="orient">
+        <option value="portrait" selected>Portrait</option>
+        <option value="landscape">Landscape</option>
+      </select>
+
+      <div class="progress hidden" id="progwrap"><div class="bar" id="bar"></div></div>
+      <div id="status" class="subtitle hidden" style="margin-top: 10px;"></div>
+
+      <div class="row right" style="margin-top: 16px;">
+        <button class="btn" id="go">Render & Download</button>
+      </div>
+    </div>
+
+    <!-- Sandbox for rendering the HTML before screenshot. -->
+    <iframe id="render-frame" sandbox="allow-same-origin" style="position:fixed;top:-20000px;left:0;width:794px;height:1123px;border:0;background:#fff;visibility:hidden;"></iframe>
+  </main>
+
+  <script type="module">
+    import { renderNav, downloadBlob, toast } from '/common.js';
+    renderNav();
+
+    let file = null;
+    const bar = document.getElementById('bar'), progwrap = document.getElementById('progwrap');
+    const statusEl = document.getElementById('status');
+
+    document.getElementById('file').addEventListener('change', e => {
+      file = e.target.files[0];
+      const n = document.getElementById('filename');
+      if (file) { n.textContent = file.name; n.classList.remove('hidden'); file.text().then(t => document.getElementById('html').value = t); }
+    });
+
+    const PAGE_PX = {
+      // 1in = 96 CSS px. Letter 8.5x11in = 816x1056. A4 8.27x11.69 ≈ 794x1123.
+      a4:     [794, 1123],
+      letter: [816, 1056],
+      legal:  [816, 1344],
+    };
+
+    document.getElementById('go').addEventListener('click', async () => {
+      const html = document.getElementById('html').value || (file && await file.text());
+      if (!html?.trim()) return toast('Paste HTML or upload a file', 'err');
+      const pageSize = document.getElementById('pageSize').value;
+      const orient = document.getElementById('orient').value;
+      const [w, h] = PAGE_PX[pageSize];
+      const [pw, ph] = orient === 'landscape' ? [h, w] : [w, h];
+
+      progwrap.classList.remove('hidden'); bar.style.width = '10%';
+      statusEl.classList.remove('hidden');
+      statusEl.textContent = 'Rendering HTML...';
+
+      const frame = document.getElementById('render-frame');
+      frame.style.width = `${pw}px`;
+      frame.style.height = `${ph}px`;
+      const doc = frame.contentDocument;
+      doc.open();
+      doc.write(`<!doctype html><html><head><meta charset="utf-8"><style>body{margin:40px;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:#111;line-height:1.6}</style></head><body>${html}</body></html>`);
+      doc.close();
+      // Give fonts/images a moment to load.
+      await new Promise(r => setTimeout(r, 400));
+      bar.style.width = '40%';
+      statusEl.textContent = 'Snapshotting to canvas...';
+
+      try {
+        const canvas = await html2canvas(doc.body, {
+          width: pw,
+          windowWidth: pw,
+          scale: 2,
+          backgroundColor: '#ffffff',
+          useCORS: true,
+        });
+        bar.style.width = '75%';
+        statusEl.textContent = 'Assembling PDF...';
+
+        const { jsPDF } = window.jspdf;
+        const pdf = new jsPDF({ orientation: orient, unit: 'px', format: [pw, ph], hotfixes: ['px_scaling'] });
+        // Slice tall canvas into pages.
+        const pageH = ph * 2;  // scale 2x
+        const totalH = canvas.height;
+        const totalPages = Math.ceil(totalH / pageH);
+        for (let i = 0; i < totalPages; i++) {
+          if (i > 0) pdf.addPage([pw, ph], orient);
+          const sliceCanvas = document.createElement('canvas');
+          sliceCanvas.width = canvas.width;
+          sliceCanvas.height = Math.min(pageH, totalH - i * pageH);
+          sliceCanvas.getContext('2d').drawImage(canvas, 0, -i * pageH);
+          const data = sliceCanvas.toDataURL('image/jpeg', 0.92);
+          pdf.addImage(data, 'JPEG', 0, 0, pw, sliceCanvas.height / 2);
+        }
+        bar.style.width = '100%';
+        const blob = pdf.output('blob');
+        downloadBlob(blob, 'webpage.pdf');
+        toast('Rendered', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+      finally { setTimeout(() => { progwrap.classList.add('hidden'); statusEl.classList.add('hidden'); }, 1000); }
+    });
+  </script>
+</body>
+</html>
